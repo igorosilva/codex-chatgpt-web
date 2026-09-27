@@ -55,11 +55,15 @@
       "dist/**",
       "electron/**",
       "assets/icon.png",
-      "assets/skills/**",
+      "assets/trayTemplate*.png",
       "assets/linux-appimage-runner.sh",
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "assets/skills",
+        "to": "skills"
+      },
       {
         "from": "build/runtime",
         "to": "runtime"

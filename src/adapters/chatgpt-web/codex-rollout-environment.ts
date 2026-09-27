@@ -468,7 +468,8 @@ function managedWorkspaceWriteProfile(
 
   const requestedWritableRoots = [cwd, ...rawWritableRoots.map(path => resolve(path as string))];
   const writableRoots = [...new Map(requestedWritableRoots.map(path => [pathIdentity(path), path] as const)).values()];
-  if (writableRoots.some(path => !roots.some(root => contains(root, path)))) return undefined;
+  // Native Codex can authorize an output directory outside its project roots. The
+  // persisted file-system authority below, not project membership, is the grant boundary.
 
   const authority = managedWorkspaceWriteAuthority(profile.file_system, roots);
   if (!authority || writableRoots.some(path => !workspaceRootCovered(path, roots, authority))) return undefined;

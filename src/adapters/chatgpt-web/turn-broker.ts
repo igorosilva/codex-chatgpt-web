@@ -265,6 +265,7 @@ export class TurnBroker implements TurnBrokerOwner {
   private acceptingExternalOwners = true;
   private server?: Server;
   private startPromise?: Promise<void>;
+  private socketIdentity?: { dev: number; ino: number };
 
   private constructor(readonly socketPath: string) {}
 
@@ -744,16 +745,21 @@ export class TurnBroker implements TurnBrokerOwner {
     const server = this.server;
     this.server = undefined;
     this.startPromise = undefined;
-    brokers.delete(this.socketPath);
+    if (brokers.get(this.socketPath) === this) brokers.delete(this.socketPath);
     if (server?.listening) {
       await new Promise<void>((resolveClose, rejectClose) => server.close(error => {
         if (!error || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") resolveClose();
         else rejectClose(error);
       }));
     }
-    if (!isWindowsPipeEndpoint(this.socketPath)
-      && existsSync(this.socketPath)
-      && lstatSync(this.socketPath).isSocket()) unlinkSync(this.socketPath);
+    const identity = this.socketIdentity;
+    this.socketIdentity = undefined;
+    if (identity && existsSync(this.socketPath)) {
+      const current = lstatSync(this.socketPath);
+      if (current.isSocket() && current.dev === identity.dev && current.ino === identity.ino) {
+        unlinkSync(this.socketPath);
+      }
+    }
   }
 
   private start(): Promise<void> {
@@ -785,7 +791,11 @@ export class TurnBroker implements TurnBrokerOwner {
         });
         server.listen(this.socketPath, () => {
           server.off("error", rejectStart);
-          if (!windowsPipe) chmodSync(this.socketPath, 0o600);
+          if (!windowsPipe) {
+            const { dev, ino } = lstatSync(this.socketPath);
+            this.socketIdentity = { dev, ino };
+            chmodSync(this.socketPath, 0o600);
+          }
           resolveStart();
         });
       };
@@ -1314,6 +1324,12 @@ export async function callTurnBroker<T>(
         parsed = JSON.parse(buffered.slice(0, newline)) as BrokerResponse;
       } catch (error) {
         finishError(new Error(`ChatGPT web turn broker returned invalid JSON: ${errorOf(error).message}`));
+        return;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+        || ("result" in parsed) === ("error" in parsed)
+        || ("error" in parsed && (typeof parsed.error !== "string" || !parsed.error))) {
+        finishError(new Error("ChatGPT web turn broker returned an invalid response frame"));
         return;
       }
       if (parsed.id !== id) {

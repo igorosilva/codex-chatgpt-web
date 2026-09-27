@@ -305,6 +305,7 @@ export async function readChatGptEffortSnapshot(
   timeoutMs = 1_000,
 ): Promise<ChatGptEffortSliderState & { available: boolean[] }> {
   const deadline = Date.now() + timeoutMs;
+  let previousLegacySnapshot: string | undefined;
   do {
     // Read range, selection and locks in one DOM revision. Separate Playwright reads can
     // straddle React hydration and combine a newly mounted range with stale picker ticks.
@@ -326,6 +327,28 @@ export async function readChatGptEffortSnapshot(
           tick.getAttribute("data-locked")),
       };
     });
+    let usedLegacySemanticLocator = false;
+    if (!snapshot.sliderPresent) {
+      // Historical picker owners (and a few Playwright selector-engine boundaries) can
+      // resolve the semantic range through the owner locator even though querySelectorAll
+      // does not expose it from the owner's evaluated DOM subtree. Keep that layout working,
+      // but require two identical complete observations before accepting a split read so we
+      // never combine a newly hydrated range with stale effort ticks.
+      const semanticSlider = sliderContainer.locator('[role="slider"]');
+      const remainingMs = Math.max(1, Math.min(250, deadline - Date.now()));
+      const [min, max, value] = await Promise.all([
+        semanticSlider.getAttribute("aria-valuemin", { timeout: remainingMs }).catch(() => null),
+        semanticSlider.getAttribute("aria-valuemax", { timeout: remainingMs }).catch(() => null),
+        semanticSlider.getAttribute("aria-valuenow", { timeout: remainingMs }).catch(() => null),
+      ]);
+      if (min !== null || max !== null || value !== null) {
+        snapshot.sliderPresent = true;
+        snapshot.min = min;
+        snapshot.max = max;
+        snapshot.value = value;
+        usedLegacySemanticLocator = true;
+      }
+    }
     const state = parseChatGptEffortSliderState(snapshot.min, snapshot.max, snapshot.value);
     if (!state) {
       if (snapshot.sliderPresent || Date.now() >= deadline) {
@@ -345,7 +368,11 @@ export async function readChatGptEffortSnapshot(
       : snapshot.locks;
     if (locks.length === expected
       && locks.every(lock => lock === "true" || lock === "false")) {
-      return { ...state, available: locks.map(lock => lock === "false") };
+      const result = { ...state, available: locks.map(lock => lock === "false") };
+      if (!usedLegacySemanticLocator) return result;
+      const serialized = JSON.stringify(result);
+      if (serialized === previousLegacySnapshot) return result;
+      previousLegacySnapshot = serialized;
     }
     if (Date.now() >= deadline) break;
     await new Promise(resolveSleep => setTimeout(resolveSleep, 50));

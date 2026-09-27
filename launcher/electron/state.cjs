@@ -4,6 +4,7 @@ const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const SIDEBAR_MIN_WIDTH = 240;
 const SIDEBAR_MAX_WIDTH = 420;
 const SESSION_REFRESH_REMINDER_INTERVAL_MS = 48 * 60 * 60 * 1000;
+const SKILL_NAME = /^[a-z0-9-]{1,63}$/;
 
 const DEFAULT_STATE = Object.freeze({
   version: 1,
@@ -68,6 +69,14 @@ function readState(filePath) {
     if (state.pendingFreshConversationPerTurn !== null
       && typeof state.pendingFreshConversationPerTurn !== "boolean") {
       state.pendingFreshConversationPerTurn = DEFAULT_STATE.pendingFreshConversationPerTurn;
+    }
+    if (state.bundledSkillSelection !== undefined && state.bundledSkillSelection !== null) {
+      if (!Array.isArray(state.bundledSkillSelection)
+        || state.bundledSkillSelection.some(skill => typeof skill !== "string" || !SKILL_NAME.test(skill))) {
+        delete state.bundledSkillSelection;
+      } else {
+        state.bundledSkillSelection = [...new Set(state.bundledSkillSelection)].sort();
+      }
     }
     if (state.coreSetupComplete !== true) {
       if (state.onboardingComplete !== true) state.browserInteractionMode = "automatic";

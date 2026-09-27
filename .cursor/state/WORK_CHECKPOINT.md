@@ -37,7 +37,20 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 - Completed: audited the supplied `codex-chatgpt-web-main.zip` against the current working tree and official upstream 6.1.2. The ZIP has 22 source files absent from the current tree and 80 changed files, but wholesale replacement is unsafe because the current fork contains newer local MCP binding, completion-fence, context-attachment, queued-follow-up, and overthinking recovery behavior.
 - Completed: identified the safest high-value selective porting candidates from the ZIP: current ChatGPT Activity DOM classification and turn binding, atomic effort-slider snapshots while preserving the local 3/legacy/5-position selectors, native `/api/auth/session` verification and explicit sign-in-required propagation, reply/code-card parsing hardening, and canonical `goal.internal_context` provenance.
 - Completed: classified the ZIP's native-task bridge, Windows local scheduler, bundled-skill selection, connector renaming, and tray assets as optional product features rather than prerequisites for the current stability bugs. Broker/compaction changes require a separate semantic audit and must not overwrite the current tokenless Native binding or completion fence.
-- Pending: continue investigating delayed completion/false idle behavior if it reproduces after the effort-control failure is removed.
+- Completed: selectively ported the Activity/progress renderer support, owned-turn rebinding, visibility hardening, code-card normalization, duplicate trace suppression, and atomic effort snapshot while preserving current, legacy 3/4-position, and 5-position slider behavior.
+- Completed: integrated native ChatGPT session verification and explicit sign-in-required propagation. Authentication redirects now invalidate stale probes, mark the active browser turn failed, and return a non-retryable authentication error to Codex instead of silently completing or dropping the task.
+- Completed: added canonical `goal.internal_context` provenance as `codex_goal`, kept it distinct from human-authored user text, and transported that origin through inline/multipart prompts.
+- Completed: added `prolite` eligibility to local Limits tracking without weakening account identity or billing-heading validation.
+- Completed: selectively ported the ZIP's useful product features without whole-file replacement or connector renaming: a prewarmed automatic browser surface, bundled-skill selection/synchronization, Native task bridge, local Windows scheduler, and native tray assets.
+- Completed: prewarming is atomic and private until claimed, verifies both the composer and `/api/auth/session`, replenishes after use, and is closed on reauthentication, manual-mode changes, passkey resets, or shutdown.
+- Completed: bundled skills are dependency-aware and preserve any personal directory not marked as managed by Codex Web GPT. Existing completed installations migrate to both bundled skills, while fresh setups can select all or none.
+- Completed: effort discovery now keeps the atomic current-DOM path and a strict two-observation fallback for historical semantic slider locators. Current, legacy 3/4-position, and full 5-position Pro controls coexist.
+- Completed: automatic setup/repair always re-proves the current ChatGPT session; an older successful smoke no longer bypasses authentication. Authentication additionally requires the authenticated Temporary Chat composer, not only a valid account endpoint.
+- Completed: audited and selectively integrated upstream stability fixes for external authorized output roots, compaction handoff failure, Native compaction error reporting, broker socket ownership/frame validation, and redacted nested health errors without replacing the fork's tokenless binding or completion fence.
+- Completed: fixed the remaining shared-helper crash behind intermittent second-message failures. When a browser turn was already aborted, `withBrowserTurnAbort()` rejected immediately without observing the aggregate promise that had already been created; its abortable external-progress loser could then reject as a detached promise, terminate the shared browser helper, and break an unrelated active tab with `EPIPE`. The already-aborted branch now explicitly observes that aggregate before returning the canonical `AbortError`.
+- Completed: restarted local production after the shared-helper correction. Runtime PID 19504 and browser-helper PID 34820 remain alive, health is `ok`, turns are accepted, and active HTTP/browser turn counts returned to zero.
+- Completed: final same-chat continuity smoke executed two sequential user turns with real Native tools. Turn 1 ran `(Get-Location).Path` and returned `CONTINUITY_FIRST_OK F:\codex-chatgpt-web`; turn 2 reused the first response, ran `git branch --show-current`, and returned `CONTINUITY_SECOND_OK main`.
+- Completed: post-restart logs show both final smoke traces following `queued -> delivered -> completed -> final -> retired` with no pending tools. Across 167 post-restart events there were zero `EPIPE`, unhandled `AbortError`, helper-exit, stream-disconnect, invalid-token, or context-window fatal patterns.
 - Pending: user acceptance retry of the actual dossier UI edit; the equivalent long-context/two-message transport is now proven end to end without touching the dossier repository.
 
 ## Evidence and validation
@@ -95,6 +108,15 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 - Continuation pressure smoke: one synthetic attached-context Codex session completed seven consecutive turns. Its final turn succeeded with 319,726 input tokens, well beyond the former 240,300 hard ceiling, and returned `PRESSURE_TURN_SEVEN_OK` without requiring a new thread.
 - Final runtime restart loaded the source correction in PID 35652; health returned `ok`, `accepting_turns=true`, and the live authenticated model catalog returned the corrected limits.
 - Final post-audit health check on `http://127.0.0.1:17841/healthz`: PID 35652, status `ok`, `accepting_turns=true`, 44 successful model-catalog requests, and zero active HTTP/browser turns. No ZIP code was imported during the audit.
+- Post-port source validation: root `bun run typecheck` passed after both the Activity/effort batch and the authentication/goal/limits batch; `node --check` passed for the modified Electron browser host and the new session helper; `git diff --check` reported only the repository's existing LF/CRLF normalization warnings.
+- Final selector compatibility validation: `tests/chatgpt-session.test.ts` passed 22/22, including locked Plus, Extra High, Pro persistence, current owners, and historical locator fallback; root TypeScript passed.
+- Focused post-port validation: browser response/limits tests passed 12 with 2 browser-only skips; environment continuity passed 74/74; broker lifecycle passed 14/14; launcher browser-host passed 111/111; launcher state passed 6/6.
+- Bundled-skill smoke proved dependency expansion, managed-skill removal, and preservation of an unmarked personal skill directory. Both PowerShell skill scripts parsed successfully.
+- Launcher production build passed (`tsc --noEmit` plus Vite build); only the existing chunk-size warning remained. The browser helper was rebuilt successfully.
+- One retained-compaction assertion remains stale against the fork's intentional model-independent conversation continuity, and the broad launcher suite still includes an unrelated missing `README.ja.md` fixture plus a stale fresh-conversation test that expects rejection instead of the current queued-preference behavior. No tests were changed.
+- Before the final patch, an intentionally abandoned Native tool request expired while another browser turn was active. Its progress waiter raised an unhandled `DOMException [AbortError]`, the shared helper exited, and the second trace lost its MCP progress mirror with `EPIPE`. This supplied direct causal evidence for the detached-promise correction in `withBrowserTurnAbort()`.
+- After the correction and restart, the same-chat two-turn smoke passed with one `exec_command` round in each turn. Traces `b296e606d4be` and `5a1140affad4` both retired with `completionCommitted=true`, no pending/queued/delivered tools, and no post-restart fatal helper patterns.
+- Final source checks after the root correction: root TypeScript passed; launcher TypeScript plus Vite production build passed; `chatgpt-session` and `turn-broker-lifecycle` passed 36/36; the browser helper remains alive under runtime PID 19504.
 
 ## Modified files
 
@@ -106,9 +128,22 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 - `src/adapters/chatgpt-web/mcp-server.ts`: accepts the retired field as optional compatibility input while continuing to resolve Native authority internally.
 - `src/adapters/chatgpt-web/mcp-server.ts`: publishes the fixed compatibility value as the optional field default and instructs callers to always provide it when that cached/current field is exposed.
 - `src/adapters/chatgpt-web/browser-worker.ts`: localized compact-picker recognition.
+- `src/adapters/chatgpt-web/browser-worker.ts`: Activity renderer classification, atomic effort snapshots, response/code-card normalization, owned-user-turn rebinding, and explicit launcher authentication failures.
+- `src/adapters/chatgpt-web/markdown.ts`: stable code-language fallback and non-empty semantic segment identity.
+- `launcher/electron/chatgpt-auth-session.cjs`: authoritative `/api/auth/session` verification shared by native session notifications.
+- `launcher/electron/browser-host.cjs`: authentication revisioning, cookie-triggered verification, turn-level sign-in failure propagation, and stale-probe rejection.
+- `launcher/electron/browser-host.cjs`: private automatic tab prewarming, safe scheduling only on complete host instances, and authenticated-composer proof before the launcher reports ready.
+- `launcher/electron/bundled-skills.cjs`, `launcher/electron/state.cjs`, `launcher/electron/main.cjs`, `launcher/electron/preload.cjs`: selectable dependency-aware bundled-skill installation and backward-compatible state migration.
+- `launcher/src/App.tsx`, `launcher/src/types.ts`, `launcher/src/i18n.ts`, `launcher/src/styles.css`: bundled-skill setup UI and launcher contracts.
+- `launcher/assets/skills/codex-native-task-bridge`, `launcher/assets/skills/codex-local-scheduler`: optional managed skills brought selectively from the ZIP.
+- `launcher/assets/trayTemplate.png`, `launcher/assets/trayTemplate@2x.png`, `launcher/package.json`: packaged tray assets and external skill resources.
+- `src/launcher-browser-host.ts`: validates and forwards `authenticationRequired` on turn release.
+- `src/types.ts`, `src/responses/parser.ts`, `src/adapters/chatgpt-web/prompt.ts`: canonical `codex_goal` provenance and transport rules that keep runtime goal steering distinct from human messages.
+- `src/adapters/chatgpt-web/limits.ts`: supports personal `prolite` accounts while preserving plan/account consistency checks.
 - `src/adapters/chatgpt-web/browser-worker.ts`: keep tool-capable future-tense progress non-terminal even before the first tool batch.
 - `src/adapters/chatgpt-web/browser-worker.ts`: detect newly appeared pre-response errors and localized oversized-message alerts without matching historical failures.
 - `src/adapters/chatgpt-web/browser-worker.ts`: reject and internally retry unverified Native/workspace-unavailable conclusions that contain no MCP tool batch.
+- `src/adapters/chatgpt-web/browser-worker.ts`: observe an already-created abort aggregate before rejecting an already-aborted browser turn, preventing detached progress-wait rejection from killing the shared helper.
 - `src/config.ts`: context attachments default on for automatic mode; explicit opt-out remains available and manual mode remains attachment-free.
 - `src/adapters/chatgpt-web/prompt.ts`: split the live MCP resume from large attached context and restore it inline without token duplication.
 - `src/adapters/chatgpt-web/prompt.ts`: preserve the exact latest human request as prompt metadata and repeat it inline only when the bulky history is moved to context files.
@@ -127,4 +162,4 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 
 ## Next exact step
 
-If the user authorizes implementation, port the first low-risk stability batch semantically rather than copying whole files: Activity/progress DOM classification plus owned-turn rebinding, then the atomic effort snapshot while retaining all local selector variants. Validate TypeScript and live browser behavior, restart through `scripts/restart-local-production-safe.ps1`, and only then consider the authentication-session batch. User acceptance can also retry the original dossier UI request in its existing Codex chat; the long-context continuation path is now proven beyond the former hard ceiling.
+All currently executable work is complete. The next product step is the user's acceptance retry in the real dossier chat. Preserve the uncommitted working tree; do not commit or push without an explicit request.

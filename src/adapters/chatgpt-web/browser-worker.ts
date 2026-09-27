@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
-import { detectChatGptLimitsPlan, readChatGptUsageAccount, readChatGptUsageModel, type ChatGptUsageModel } from "./limits";
+import {
+  detectChatGptLimitsPlan,
+  readChatGptUsageAccount,
+  readChatGptUsageModel,
+  supportsChatGptUsageTracking,
+  type ChatGptUsageModel,
+} from "./limits";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Request, type Response } from "playwright-core";
 import {
   atomicWriteFile,
@@ -1359,7 +1365,14 @@ function throwIfPromptAttachmentAborted(signal?: AbortSignal): void {
 
 function withBrowserTurnAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+  if (signal.aborted) {
+    // The caller may have constructed a Promise.race with abortable losers before it
+    // observed the already-aborted turn signal. Keep that aggregate observed: otherwise
+    // aborting its progress waiter rejects a detached promise and terminates the shared
+    // launcher helper, taking unrelated concurrent tabs down with it.
+    void promise.catch(() => {});
+    return Promise.reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+  }
   return new Promise<T>((resolvePromise, rejectPromise) => {
     const onAbort = () => rejectPromise(new DOMException("ChatGPT web turn aborted", "AbortError"));
     signal.addEventListener("abort", onAbort, { once: true });
@@ -5387,8 +5400,20 @@ export class ChatGptBrowserWorker {
             : {}),
         });
         if (release.cancelledByUser) throw chatGptBrowserTabClosedError();
+        if (release.authenticationRequired && terminal !== "aborted") {
+          throw new ChatGptWebAdapterError(
+            "ChatGPT requested sign-in. Open sign in in the launcher, then retry.",
+            {
+              status: 401,
+              errorType: "authentication_error",
+              code: "chatgpt_sign_in_required",
+              retryable: false,
+            },
+          );
+        }
       } catch (controlError) {
-        if (controlError instanceof ChatGptWebAdapterError && controlError.code === "client_cancelled") {
+        if (controlError instanceof ChatGptWebAdapterError
+          && ["client_cancelled", "chatgpt_sign_in_required"].includes(controlError.code)) {
           throw controlError;
         }
         if (!originalError) throw controlError;
@@ -5677,7 +5702,7 @@ export class ChatGptBrowserWorker {
         let accountKey: string | undefined;
         try {
           const account = await readChatGptUsageAccount(page);
-          if (account.personal && account.planType === "pro") accountKey = account.accountKey;
+          if (supportsChatGptUsageTracking(account)) accountKey = account.accountKey;
         } catch {
           // A missing identity is reported as a tracking gap, never charged to the previous account.
         }

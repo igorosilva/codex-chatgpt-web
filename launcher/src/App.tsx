@@ -1145,6 +1145,14 @@ function SetupSurface({
   updateState: (state: LauncherState) => void;
 }) {
   const [localBusy, setLocalBusy] = useState(false);
+  const availableBundledSkills = snapshot.bundledSkills.available;
+  const persistedBundledSkills = snapshot.state.bundledSkillSelection;
+  const [selectedBundledSkills, setSelectedBundledSkills] = useState<string[]>(
+    persistedBundledSkills ?? availableBundledSkills,
+  );
+  useEffect(() => {
+    setSelectedBundledSkills(persistedBundledSkills ?? availableBundledSkills);
+  }, [availableBundledSkills.join("\0"), persistedBundledSkills?.join("\0")]);
   const manualInteraction = snapshot.state.browserInteractionMode === "manual";
   // A verified Codex catalog proves the browser smoke gate was completed when the
   // integration was installed. A launcher update may intentionally invalidate the
@@ -1185,9 +1193,14 @@ function SetupSurface({
     onSmokeComplete();
   });
   const install = () => run(async () => {
-    await api!.setupCore();
+    await api!.setupCore({ bundledSkills: selectedBundledSkills });
     updateState((await api!.snapshot()).state);
   });
+  const toggleBundledSkill = (skill: string) => {
+    setSelectedBundledSkills(current => current.includes(skill)
+      ? current.filter(item => item !== skill)
+      : [...current, skill].sort());
+  };
   const setZeroRiskPro = (enabled: boolean) => run(async () => {
     updateState(await api!.setZeroRiskPro(enabled));
   });
@@ -1225,6 +1238,41 @@ function SetupSurface({
             title={copy.stepSmoke}
           />
         </> : null}
+        <div className="skill-install-panel">
+          <div className="skill-install-heading">
+            <div>
+              <strong>{copy.bundledSkillsTitle}</strong>
+              <p>{copy.bundledSkillsBody}</p>
+            </div>
+            <div className="skill-install-actions">
+              <button
+                className="text-button"
+                disabled={busy || selectedBundledSkills.length === availableBundledSkills.length}
+                onClick={() => setSelectedBundledSkills([...availableBundledSkills])}
+                type="button"
+              >{copy.keepAllSkills}</button>
+              <button
+                className="text-button"
+                disabled={busy || selectedBundledSkills.length === 0}
+                onClick={() => setSelectedBundledSkills([])}
+                type="button"
+              >{copy.removeAllSkills}</button>
+            </div>
+          </div>
+          <div className="skill-install-options" role="group" aria-label={copy.bundledSkillsTitle}>
+            {availableBundledSkills.map(skill => (
+              <label className="skill-install-option" key={skill}>
+                <input
+                  checked={selectedBundledSkills.includes(skill)}
+                  disabled={busy}
+                  onChange={() => toggleBundledSkill(skill)}
+                  type="checkbox"
+                />
+                <span>{skill}</span>
+              </label>
+            ))}
+          </div>
+        </div>
         <SetupRow
           action={snapshot.state.coreSetupComplete
             ? devProfile ? copy.devReinstall : copy.reinstall
@@ -1657,6 +1705,13 @@ function SettingsSurface({
   const [busy, setBusy] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
+  const contextAttachment = language === "pt-BR" ? {
+    label: "Contexto grande como arquivo",
+    body: "Quando o contexto ultrapassa 24 mil caracteres, anexa um arquivo de texto e envia apenas uma instrução curta. Reduz o tempo de preenchimento do ChatGPT. Desativado por padrão.",
+  } : {
+    label: "Large context as a file",
+    body: "When context exceeds 24,000 characters, attach one text file and send only a short instruction. This reduces ChatGPT composer time. Off by default.",
+  };
 
   const updateLanguage = async (next: Language) => {
     try {
@@ -1868,8 +1923,8 @@ function SettingsSurface({
           </div>
         </SettingRow>
         <SettingRow
-          body={contextAttachmentCopy(language).body}
-          label={contextAttachmentCopy(language).label}
+          body={contextAttachment.body}
+          label={contextAttachment.label}
         >
           <Switch
             checked={snapshot.state.experimentalContextAttachments === true}
@@ -2733,17 +2788,6 @@ function messageOf(value: unknown): string {
 function pendingFreshConversationCopy(language: Language, enabled: boolean): string {
   if (language === "pt-BR") return `Agendado: ${enabled ? "ativar" : "desativar"} · Cancelar`;
   return `Queued: turn ${enabled ? "on" : "off"} · Cancel`;
-}
-
-function contextAttachmentCopy(language: Language): { label: string; body: string } {
-  if (language === "pt-BR") return {
-    label: "Contexto grande como arquivo",
-    body: "Quando o contexto ultrapassa 24 mil caracteres, anexa um arquivo de texto e envia apenas uma instrução curta. Reduz o tempo de preenchimento do ChatGPT. Desativado por padrão.",
-  };
-  return {
-    label: "Large context as a file",
-    body: "When context exceeds 24,000 characters, attach one text file and send only a short instruction. This reduces ChatGPT composer time. Off by default.",
-  };
 }
 
 function platformLabel(value: string): string {

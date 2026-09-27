@@ -64,7 +64,15 @@ const KEYS_URL = "https://platform.openai.com/settings/organization/api-keys";
 const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, X_URL, CONNECTORS_URL, TUNNELS_URL, KEYS_URL, LIMITS_SOURCE_URL]);
 const PACKAGED_RENDERER_URL = pathToFileURL(path.join(__dirname, "..", "dist", "index.html")).href;
 const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.png");
-const BUNDLED_SKILLS_PATH = path.join(__dirname, "..", "assets", "skills");
+const BUNDLED_SKILLS_PATH = app.isPackaged
+  ? path.join(process.resourcesPath, "skills")
+  : path.join(__dirname, "..", "assets", "skills");
+const {
+  listBundledSkills,
+  migrateBundledSkillSelection,
+  syncBundledSkills,
+  validateBundledSkillSelection,
+} = require("./bundled-skills.cjs");
 
 const launchEnvironment = {
   CODEX_CHATGPT_WEB_HOME: process.env.CODEX_CHATGPT_WEB_HOME,
@@ -107,23 +115,6 @@ let updateController = null;
 let limitsController = null;
 let pendingPreferenceTimer = null;
 let applyingPendingFreshConversation = false;
-
-function installBundledSkills() {
-  if (!fs.existsSync(BUNDLED_SKILLS_PATH)) return [];
-  const installed = [];
-  const skillsRoot = path.join(LAUNCHER_PROFILE.codexHome, "skills");
-  fs.mkdirSync(skillsRoot, { recursive: true });
-  for (const entry of fs.readdirSync(BUNDLED_SKILLS_PATH, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^[a-z0-9-]{1,63}$/.test(entry.name)) continue;
-    const source = path.join(BUNDLED_SKILLS_PATH, entry.name);
-    const destination = path.join(skillsRoot, entry.name);
-    const marker = path.join(destination, ".managed-by-codex-web-gpt");
-    if (fs.existsSync(destination) && !fs.existsSync(marker)) continue;
-    fs.cpSync(source, destination, { recursive: true, force: true, errorOnExist: false });
-    installed.push(entry.name);
-  }
-  return installed;
-}
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -237,8 +228,8 @@ function trayImage() {
   if (process.platform !== "darwin") {
     return nativeImage.createFromPath(APP_ICON_PATH).resize({ width: 18, height: 18 });
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path d="M4.1 3.4h6.4l3.4 3.4v7.8H7.5l-3.4-3.4V3.4Z" fill="none" stroke="white" stroke-width="1.5" stroke-linejoin="round"/><path d="m7 7 2-2 2 2M7 11l2 2 2-2" fill="none" stroke="white" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  const image = nativeImage.createFromPath(path.join(__dirname, "..", "assets", "trayTemplate.png"));
+  if (image.isEmpty()) throw new Error("The macOS menu-bar icon is missing or invalid");
   image.setTemplateImage(true);
   return image;
 }
@@ -653,6 +644,10 @@ function registerIpc({ logger, stateStore }) {
       userData: launcherUserData,
     },
     state: syncFreshConversationPreference(stateStore, runtimeHost.runtimeConfigSnapshot().config),
+    bundledSkills: {
+      available: typeof listBundledSkills === "function" ? listBundledSkills(BUNDLED_SKILLS_PATH) : [],
+      selected: stateStore.read().bundledSkillSelection ?? null,
+    },
     browser: browserHost?.snapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
     connectorNames: {
@@ -888,10 +883,20 @@ function registerIpc({ logger, stateStore }) {
     stopCatalogVerificationMonitor();
     return { cancelled: false, state };
   });
-  handle("launcher:setup-core", async () => {
+  handle("launcher:setup-core", async (_event, input = {}) => {
     const setupState = stateStore.read();
-    const smokeProved = smokePassedThisSession || smokePassedForCurrentVersion(setupState);
-    if (setupState.browserInteractionMode === "automatic" && !smokeProved) {
+    const availableBundledSkills = typeof listBundledSkills === "function"
+      ? listBundledSkills(BUNDLED_SKILLS_PATH)
+      : [];
+    const selectedBundledSkills = typeof validateBundledSkillSelection === "function"
+      ? validateBundledSkillSelection(
+          input?.bundledSkills ?? setupState.bundledSkillSelection ?? availableBundledSkills,
+          availableBundledSkills,
+        )
+      : [];
+    // A previous smoke proves browser compatibility, not the current account session.
+    // Re-check authentication on every automatic setup/repair transaction.
+    if (setupState.browserInteractionMode === "automatic") {
       const browser = await browserHost.probeAuthentication();
       if (!browser.authenticated) {
         if (browser.status === "error") throw new Error(browser.message);
@@ -904,7 +909,8 @@ function registerIpc({ logger, stateStore }) {
     }
     if (setupState.browserInteractionMode === "automatic"
       && !setupState.coreSetupComplete
-      && !smokeProved) {
+      && !smokePassedThisSession
+      && !smokePassedForCurrentVersion(setupState)) {
       throw new Error(
         IS_DEV_PROFILE
           ? "Run the browser smoke test before configuring the DEV harness"
@@ -912,6 +918,13 @@ function registerIpc({ logger, stateStore }) {
       );
     }
     const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
+    const bundledSkillResult = typeof syncBundledSkills === "function"
+      ? syncBundledSkills({
+          sourceRoot: BUNDLED_SKILLS_PATH,
+          codexHome: LAUNCHER_PROFILE.codexHome,
+          selectedSkills: selectedBundledSkills,
+        })
+      : { available: [], selected: [], installed: [], removed: [], preserved: [] };
     stateStore.update({
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
@@ -922,6 +935,7 @@ function registerIpc({ logger, stateStore }) {
       experimentalContextAttachments: runtimeHost.runtimeConfigSnapshot().config?.experimentalContextAttachments === true,
       experimentalFreshConversationPerTurn: runtimeHost.runtimeConfigSnapshot().config?.experimentalFreshConversationPerTurn === true,
       useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
+      bundledSkillSelection: selectedBundledSkills,
       ...(result.mode === "full" ? {
         mcpRuntimeInstalled: true,
         mcpSetupComplete: false,
@@ -938,7 +952,12 @@ function registerIpc({ logger, stateStore }) {
       });
     });
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
-    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
+    return {
+      ok: true,
+      stdout: result.stdout,
+      restartRequired: !IS_DEV_PROFILE,
+      bundledSkills: bundledSkillResult,
+    };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
     // The Setup surface may be opened while a slow smoke test is still waiting for
@@ -1212,8 +1231,6 @@ async function start() {
 
   await app.whenReady();
 
-  const bundledSkills = installBundledSkills();
-
   const startupStartedAt = Date.now();
   const preflightHidden = process.argv.includes("--hidden");
   if (!preflightHidden) startupWindow = await createStartupWindow();
@@ -1238,6 +1255,36 @@ async function start() {
   const runtimeValidationMs = Date.now() - runtimeValidationStartedAt;
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
+  const availableBundledSkills = listBundledSkills(BUNDLED_SKILLS_PATH);
+  const initialState = stateStore.read();
+  const migratedBundledSkillSelection = migrateBundledSkillSelection(
+    initialState.bundledSkillSelection,
+    availableBundledSkills,
+    initialState.coreSetupComplete,
+  );
+  let bundledSkills = {
+    available: availableBundledSkills,
+    selected: migratedBundledSkillSelection,
+    installed: [],
+    removed: [],
+    preserved: [],
+  };
+  let bundledSkillsStartupError = null;
+  if (migratedBundledSkillSelection !== null) {
+    try {
+      bundledSkills = syncBundledSkills({
+        sourceRoot: BUNDLED_SKILLS_PATH,
+        codexHome: LAUNCHER_PROFILE.codexHome,
+        selectedSkills: migratedBundledSkillSelection,
+      });
+    } catch (error) {
+      bundledSkillsStartupError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  if (migratedBundledSkillSelection !== null
+    && JSON.stringify(initialState.bundledSkillSelection) !== JSON.stringify(migratedBundledSkillSelection)) {
+    stateStore.update({ bundledSkillSelection: migratedBundledSkillSelection });
+  }
   const retainedConversationStore = createRetainedConversationStore(
     path.join(app.getPath("userData"), "retained-conversations.json"),
   );
@@ -1273,6 +1320,9 @@ async function start() {
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
     publish: (record) => send("launcher:log", record),
   });
+  if (bundledSkillsStartupError) {
+    logger.warn("launcher.bundled_skills_sync_failed", { message: bundledSkillsStartupError });
+  }
   logger.info("launcher.startup_preflight_completed", {
     runtimeValidationMs,
     elapsedMs: Date.now() - startupStartedAt,
