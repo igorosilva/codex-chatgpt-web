@@ -62,6 +62,9 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 - Completed: the authenticated live catalog exposes five routes for the current non-Pro account. Instant/Low routes advertise 1,050,000 / 95% / 32,000 and Sol Medium/High routes advertise 1,050,000 / 95% / 80,000 for context / effective percent / auto-compaction.
 - Completed: a two-message same-chat live smoke passed after the restart. Turn 1 called Native execution and returned `LIVE_FIRST_OK F:\\codex-chatgpt-web`; turn 2 resumed the exact same Codex thread, streamed Activity progress, called Native execution again, and returned `LIVE_SECOND_OK develop`.
 - Completed: 124 launcher records after the restart contained zero errors and zero fatal-pattern matches for `EPIPE`, unhandled `AbortError`, helper exit, stream disconnect, invalid token, context-window exhaustion, or false Native-unavailable completion. Both smoke traces reached completed/final/retired state with no pending tools.
+- Completed: a real remote compaction at 21:01 UTC exposed a new 2026 DOM nesting variant. The same assistant identity appeared on an outer `data-turn-key` owner and an inner `data-chatgpt-search-message-ids` Activity/search unit; the union locator counted both and aborted three fresh handoff attempts with `ChatGPT exposed 2 DOM nodes for the bound assistant turn`.
+- Completed: `chatGptTurnLocator()` now excludes nested duplicate representations of the same identity and keeps the canonical outer owner across legacy `data-turn-id`, Activity `data-turn-key`, and search-unit layouts. TypeScript passed and a live Chromium synthetic DOM probe reduced the failing shape from two matches to one canonical `SECTION`.
+- Completed: safe restart loaded the selector correction in runtime PID 44476. A live responses/memento compact request completed, followed by the exact v2 `compaction_trigger` protocol that previously failed; it returned status `completed`, exactly one `compaction` output, and a 1,429-character encrypted checkpoint envelope. Post-restart logs contain zero duplicate-turn failures and zero structured context-handoff failures.
 - Pending: user acceptance retry of the actual dossier UI edit; the dossier repository itself remains untouched.
 
 ## Evidence and validation
@@ -179,4 +182,4 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 
 ## Next exact step
 
-All agreed selective merge and executable validation work is complete on `develop`. The next product step is the user's acceptance retry in the real dossier chat. Preserve the uncommitted working tree; do not commit, push, or merge into `main` without an explicit request.
+The remote compact regression is corrected and proven live. The next product step is the user's acceptance retry in the real dossier chat. Preserve the uncommitted working tree; do not commit, push, or merge into `main` without an explicit request.

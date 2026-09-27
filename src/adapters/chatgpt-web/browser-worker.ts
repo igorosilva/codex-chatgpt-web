@@ -1241,9 +1241,12 @@ export const browserStageTimeouts = {
 function chatGptTurnLocator(page: Page, identity: string): Locator {
   const selector = JSON.stringify(identity);
   return page.locator([
-    `[data-turn-id=${selector}]`,
-    `[data-turn-key=${selector}]`,
-    `[data-chatgpt-search-message-ids~=${selector}]`,
+    `[data-turn-id=${selector}]:not([data-turn-id=${selector}] [data-turn-id=${selector}])`,
+    `[data-turn-key=${selector}]:not([data-turn-key=${selector}] [data-turn-key=${selector}])`,
+    `[data-chatgpt-search-message-ids~=${selector}]`
+      + `:not([data-turn-id=${selector}] [data-chatgpt-search-message-ids~=${selector}])`
+      + `:not([data-turn-key=${selector}] [data-chatgpt-search-message-ids~=${selector}])`
+      + `:not([data-chatgpt-search-message-ids~=${selector}] [data-chatgpt-search-message-ids~=${selector}])`,
   ].join(", "));
 }
 
