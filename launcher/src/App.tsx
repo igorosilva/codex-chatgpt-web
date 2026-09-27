@@ -866,6 +866,9 @@ function BrowserSurface({
     && operation?.name === "passkey-login"
     && operation.status === "running"
     && browser?.authenticated !== true;
+  const checkingSavedSession = !manualInteraction
+    && browser?.authenticated !== true
+    && browser?.status === "loading";
   useEffect(() => {
     if (!passkeyWaiting) setPasskeyContinuationRequested(false);
   }, [passkeyWaiting]);
@@ -1033,7 +1036,7 @@ function BrowserSurface({
         {!visible ? (
           <div className="browser-empty">
             <BrandMark />
-            <h1>{activeBrowserTurn
+            {!checkingSavedSession ? <><h1>{activeBrowserTurn
               ? copy.activeTaskHidden
               : manualInteraction
                 ? copy.browserReady
@@ -1059,7 +1062,7 @@ function BrowserSurface({
                     : copy.passkeySignIn}
                 </SecondaryButton>
               ) : null}
-            </div>
+            </div></> : null}
           </div>
         ) : (
           <div className="browser-underlay" aria-hidden="true">
@@ -1193,6 +1196,10 @@ function SetupSurface({
     onSmokeComplete();
   });
   const install = () => run(async () => {
+    if (!manualInteraction && !browserSetupGateComplete) {
+      await activateBrowser();
+      await api!.smokeTest();
+    }
     await api!.setupCore({ bundledSkills: selectedBundledSkills });
     updateState((await api!.snapshot()).state);
   });
@@ -1231,7 +1238,7 @@ function SetupSurface({
             action={copy.runSmoke}
             complete={browserSetupGateComplete}
             description={copy.stepSmokeBody}
-            disabled={busy || !browser?.authenticated}
+            disabled={busy}
             index={2}
             onAction={smoke}
             repeatable
@@ -1279,7 +1286,7 @@ function SetupSurface({
             : devProfile ? copy.devInstall : copy.install}
           complete={snapshot.state.codexCatalogVerified === true}
           description={devProfile ? copy.devStepInstallBody : copy.stepInstallBody}
-          disabled={busy || (!browserSetupGateComplete && snapshot.state.coreSetupComplete !== true)}
+          disabled={busy}
           index={manualInteraction ? 1 : 3}
           onAction={install}
           repeatable

@@ -310,6 +310,21 @@ const NATIVE_COPY = Object.freeze({
     startupCleanupFailed: "시작 정리에 실패했습니다",
     catalogFailure: "Codex가 런처에 연결했지만 모델 목록을 불러오지 못했습니다(HTTP {status}; {reason}). 활동에서 세부 정보를 확인하고 문제가 계속되면 안전한 로그를 내보내 주세요.",
   }),
+  "pt-BR": Object.freeze({
+    openLauncher: "Abrir Codex Web GPT",
+    quit: "Sair",
+    exportDiagnostics: "Exportar diagnóstico seguro",
+    cancel: "Cancelar",
+    remove: "Remover",
+    removeTitle: "Remover Codex Web GPT",
+    removeMessage: "Remover os modelos ChatGPT Web do Codex e restaurar a rota anterior?",
+    removeDetail: "O perfil de login do ChatGPT será preservado. O Codex precisará ser reiniciado uma vez.",
+    retry: "Tentar novamente",
+    startupTitle: "O Codex Web GPT não pôde iniciar",
+    startupDetail: "A nova tentativa reinicia o launcher sem alterar suas configurações salvas ou o perfil do ChatGPT.",
+    startupCleanupFailed: "Falha na limpeza da inicialização",
+    catalogFailure: "O Codex alcançou o launcher, mas não conseguiu carregar o catálogo de modelos (HTTP {status}; {reason}). Consulte Atividade e exporte um log seguro se o problema persistir.",
+  }),
 });
 
 function nativeCopyFor(language) {
@@ -463,6 +478,9 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: true,
+      // This window owns the ChatGPT WebContentsViews. On Windows a hidden or
+      // minimized parent can suspend child rendering unless the owner opts out.
+      backgroundThrottling: false,
       v8CacheOptions: "bypassHeatCheckAndEagerCompile",
     },
   });
@@ -746,6 +764,14 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:browser-smoke", async () => {
     if (stateStore.read().browserInteractionMode === "manual") {
       throw new Error("Browser smoke testing is disabled in Zero Risk mode");
+    }
+    // Re-check at action time. The persisted partition can finish mounting after
+    // startup published a stale signed-out renderer snapshot.
+    await browserHost.waitForManualOperationIdle();
+    const browser = await browserHost.refreshAuthentication();
+    if (!browser.authenticated) {
+      if (browser.status === "error") throw new Error(browser.message);
+      throw new Error("Sign in to ChatGPT before running the browser smoke test");
     }
     const result = await browserHost.smokeTest();
     stateStore.update({ browserSmokePassed: true, browserSmokeVersion: app.getVersion() });
@@ -1185,6 +1211,10 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
+    // Codex routes all model traffic through the local bridge while it is active.
+    // Restore the previous route before stopping the bridge so intentional launcher
+    // exit cannot strand existing Codex tasks in reconnect loops.
+    await runtimeHost?.restoreBridgeRoute("launcher-quit");
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     if (pendingPreferenceTimer) clearInterval(pendingPreferenceTimer);
     pendingPreferenceTimer = null;

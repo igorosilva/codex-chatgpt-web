@@ -2755,6 +2755,11 @@ class BrowserHost {
       throw new Error("Manual prompt is no longer available");
     }
     this.writeManualPrompt(tab.prompt);
+    if (tab.manualState === "awaiting-user") {
+      tab.manualDeadlineAt = Date.now() + tab.manualSubmitTimeoutMs;
+      this.armManualTurnDeadline(tab);
+      this.publishState?.(this.snapshot());
+    }
     this.logger.info("browser.manual_prompt_copied", { tabId: tab.id, traceId: tab.traceId });
     return this.snapshot();
   }
@@ -2773,7 +2778,8 @@ class BrowserHost {
     // remains cancellable through its helper or tab, including before the first MCP bind.
     tab.manualDeadlineAt = null;
     tab.sentAt = new Date().toISOString();
-    tab.prompt = null;
+    // Keep Copy available until the connector actually starts. If Sent was clicked
+    // prematurely, the user can still resend the exact owned prompt safely.
     tab.message = "Prompt sent; waiting for ChatGPT to start through the Codex harness";
     for (const resolve of tab.manualWaiters) resolve({ status: "sent", sentAt: tab.sentAt });
     tab.manualWaiters.clear();
@@ -2794,6 +2800,8 @@ class BrowserHost {
     tab.manualDeadlineTimer = null;
     tab.manualDeadlineAt = null;
     tab.manualState = "running";
+    tab.prompt = null;
+    // Retain the digest: repeated start requests must still validate the same prompt.
     tab.message = "ChatGPT is working through the Codex harness";
     tab.lastHeartbeatAt = Date.now();
     this.publishState?.(this.snapshot());
