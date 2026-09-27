@@ -77,6 +77,18 @@ export const CHATGPT_WEB_PRO_MODEL_COMPOSER_CHAR_LIMIT = 1_635_000;
  */
 export const CHATGPT_WEB_LUNA_CONTEXT_WINDOW = 1_050_000;
 export const CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER = 3;
+/**
+ * File-backed context needs a generous Codex-side ceiling so a large continued thread can reach
+ * the bridge and its `/responses/compact` implementation. This is a transport ceiling, not the
+ * amount that should be sent to ChatGPT in one inference request.
+ */
+export const CHATGPT_WEB_ATTACHMENT_CONTEXT_WINDOW = 1_050_000;
+/**
+ * Keep the outer safety ceiling independent from the usable-input reserve. The auto-compaction
+ * trigger remains the selected route's measured model threshold (32k/80k/95k), not a percentage
+ * of this transport-only ceiling.
+ */
+export const CHATGPT_WEB_ATTACHMENT_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
 
 export interface ChatGptWebContextLimits {
   contextWindow: number;
@@ -99,12 +111,11 @@ export function isChatGptWebZeroRiskBackendModel(
 function contextLimits(
   contextWindow: number,
   autoCompactTokenLimit: number,
+  effectiveContextWindowPercent = Math.round((autoCompactTokenLimit / contextWindow) * 100),
 ): ChatGptWebContextLimits {
   return {
     contextWindow,
-    // Codex reports this effective window in its context indicator. Align it with the practical
-    // pre-compaction budget instead of exposing an unreachable underlying model window.
-    effectiveContextWindowPercent: Math.round((autoCompactTokenLimit / contextWindow) * 100),
+    effectiveContextWindowPercent,
     autoCompactTokenLimit,
   };
 }
@@ -137,13 +148,6 @@ export function resolveChatGptWebContextLimits(
     return contextLimits(CHATGPT_WEB_LUNA_CONTEXT_WINDOW, CHATGPT_WEB_LUNA_CONTEXT_WINDOW);
   }
 
-  // File-backed context keeps the canonical history outside the composer. Give Codex enough outer
-  // room to reach the adapter on large, old threads; the adapter then uploads that history and its
-  // own compaction policy remains the authoritative boundary.
-  if (capabilities.experimentalContextAttachments) {
-    return contextLimits(1_050_000, 950_000);
-  }
-
   let limits: ChatGptWebContextLimits;
   if (capabilities.proAvailable) {
     const contextWindow = effort === "low"
@@ -164,6 +168,18 @@ export function resolveChatGptWebContextLimits(
     );
   } else {
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
+  }
+  if (capabilities.experimentalContextAttachments) {
+    // The canonical history remains in Codex until its compact request completes, even though the
+    // bridge moves that history out of the visible composer. Preserve enough outer room for the
+    // compact request to reach this adapter while retaining the selected route's earlier, measured
+    // compaction threshold. This prevents the next user message from hitting a synthetic hard cap
+    // before Codex can dispatch `/responses/compact`.
+    return contextLimits(
+      CHATGPT_WEB_ATTACHMENT_CONTEXT_WINDOW,
+      limits.autoCompactTokenLimit,
+      CHATGPT_WEB_ATTACHMENT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+    );
   }
   if (!capabilities.experimentalBiggerContext) return limits;
   return contextLimits(

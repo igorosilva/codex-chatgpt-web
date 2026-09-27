@@ -240,9 +240,50 @@ test("turn broker tokens do not expire while their browser turn is still alive",
       sandboxPolicy: { type: "dangerFullAccess" },
       tools: [],
     });
+    expect(token).toMatch(/^turn_[a-f0-9]{24}$/);
     await Bun.sleep(5);
     await expect(callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token }))
       .resolves.toMatchObject({ bindingId: expect.any(String) });
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("native claim recovers a model-corrupted token only for one unambiguous active turn", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-unique-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, 60_000, "unique-active");
+    const recovered = await callTurnBroker<{ token: string; bindingId: string }>(socketPath, {
+      method: "claim",
+      activityId: "activity_0000000000000000",
+      contract: "native",
+      allowUniqueActiveFallback: true,
+    });
+    expect(recovered.token).toBe(token);
+
+    await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, 60_000, "second-active");
+    await expect(callTurnBroker(socketPath, {
+      method: "claim",
+      token: "turn_111111111111111111111111",
+      activityId: "activity_1111111111111111",
+      contract: "native",
+      allowUniqueActiveFallback: true,
+    })).rejects.toThrow("invalid, expired, or revoked");
   } finally {
     await broker.close();
     rmSync(root, { recursive: true, force: true });

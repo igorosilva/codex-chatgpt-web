@@ -76,6 +76,51 @@ describe("large context attachment transport", () => {
     expect(largeContextAsAttachment(large, false)).toBe(large);
   });
 
+  test("keeps the live MCP resume and turn token inline while attaching only bulky context", () => {
+    const token = "turn_12345678901234567890123456789012";
+    const resume = [
+      "<codex_transport_resume>",
+      `The task context is complete. Pass turn_token ${token} unchanged to every Codex Native call in this response. Execute the latest active user request now.`,
+      "</codex_transport_resume>",
+    ].join("\n");
+    const original = `${"historical context ".repeat(20_000)}\n${resume}`;
+    const result = largeContextAsAttachment(prompt(original), true);
+
+    expect(result.text).toContain(resume);
+    expect(result.text).toContain(token);
+    expect(result.text).toContain("Codex Native is selected and active for this response");
+    expect(result.text).toContain("Do not claim that the executor, workspace, or editing tools are unavailable");
+    expect(result.skillFiles?.map(file => file.text).join("")).not.toContain(token);
+    expect(result.skillFiles?.map(file => file.text).join("")).not.toContain("<codex_transport_resume>");
+    expect(`${result.text}\n${result.skillFiles?.map(file => file.text).join("")}`.match(new RegExp(token, "g"))).toHaveLength(1);
+  });
+
+  test("keeps the latest human request authoritative inline when history moves to an attachment", () => {
+    const latest = "Move the dossier cards to the top and restore the numbered next steps.";
+    const result = largeContextAsAttachment({
+      ...prompt(`${"old hearing request ".repeat(20_000)}\n<codex_transport_resume>Execute the latest active user request now.</codex_transport_resume>`),
+      activeUserRequest: latest,
+    }, true);
+
+    expect(result.text).toContain("exact latest human-authored request");
+    expect(result.text).toContain(JSON.stringify(latest));
+    expect(result.text.indexOf(JSON.stringify(latest))).toBeLessThan(result.text.indexOf("<codex_transport_resume>"));
+    expect(result.skillFiles?.map(file => file.text).join("")).not.toContain(latest);
+  });
+
+  test("removes a retired token from the inline active-request copy", () => {
+    const staleToken = "turn_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const currentToken = "turn_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    const result = largeContextAsAttachment({
+      ...prompt(`${"history ".repeat(20_000)}\n<codex_transport_resume>Pass turn_token ${currentToken} unchanged.</codex_transport_resume>`),
+      activeUserRequest: `Retry the edit after the prior response mentioned ${staleToken}.`,
+    }, true);
+
+    expect(result.text).not.toContain(staleToken);
+    expect(result.text).toContain("[retired turn handle]");
+    expect(result.text.match(new RegExp(currentToken, "g"))).toHaveLength(1);
+  });
+
   test("does not replace an already transactional multipart prompt", () => {
     const multipart = {
       ...prompt("x".repeat(CHATGPT_CONTEXT_ATTACHMENT_THRESHOLD_CHARS)),

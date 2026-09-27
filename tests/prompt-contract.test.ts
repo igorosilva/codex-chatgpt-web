@@ -44,7 +44,7 @@ test("history handle cleanup works on decoded text and preserves native call ide
   expect(cleaned.literal).toBe(context.literal);
 });
 
-test("Full-mode Pro prompts pass one stable turn token directly to native actions", () => {
+test("Full-mode Pro binds native actions without exposing the broker token to the model", () => {
   const token = "turn_12345678901234567890123456789012";
   const parsed = request("max");
   parsed.context.tools = [{
@@ -68,7 +68,8 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
 
   expect(envelopeEnd).toBeGreaterThan(0);
   expect(resume).toBeGreaterThan(envelopeEnd);
-  expect(tokenMatches).toHaveLength(1);
+  expect(tokenMatches).toBeNull();
+  expect(compiled.activeUserRequest).toBe(`Diagnose an invalid binding_id safety failure without replaying ${token}`);
   expect(compiled.text).toContain("[retired turn handle]");
   expect(transportOnly).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
   expect(transportOnly).toContain("Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.");
@@ -94,7 +95,7 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).toContain("Do not expose private chain-of-thought");
   expect(transportOnly).toContain("never emit visual toolbar labels such as Plain text or Copy");
   expect(transportOnly).toContain("Write the user-facing final answer only after the last required tool result has settled.");
-  expect(transportOnly).toContain(`The task context is complete. Pass turn_token ${token} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`);
+  expect(transportOnly).toContain("Codex Native is attached and automatically bound to this sole active turn; its tools require no turn token.");
   expect(transportOnly).not.toMatch(/codex_bind_turn|binding_id|outer_tool_gateway|command_tool/);
   expect(transportOnly).not.toMatch(/codex_exec|codex_write_stdin|codex_apply_patch|codex_view_image|codex_tool_inventory|codex\.control\.turn_complete/);
   expect(transportOnly).not.toMatch(/expired|invalid|revoked|blocked|safety|security layer|permission gate/i);
@@ -110,7 +111,8 @@ test("Pro preserves the same native Codex delegation contract as Extra High", ()
 
   for (const compiled of [pro, extraHigh]) {
     expect(compiled.text).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
-    expect(compiled.text).toContain(`Pass turn_token ${token} unchanged to every Codex Native call in this response`);
+    expect(compiled.text).toContain("its tools require no turn token");
+    expect(compiled.text).not.toContain(token);
     expect(compiled.text).not.toContain("Complete this task directly in the current parent response.");
     expect(compiled.text).not.toContain("Do not create, spawn, delegate to, or wait on sub-agents");
     expect(compiled.text).not.toContain("Use non-agent tools directly instead.");

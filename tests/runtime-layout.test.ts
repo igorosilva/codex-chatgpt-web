@@ -288,7 +288,7 @@ test("conversation preferences survive reload; saved chats also apply to Zero Ri
   mkdirSync(root, { recursive: true });
   const config: Record<string, unknown> = { ...defaultConfig("browser-only") };
   const persist = () => writeFileSync(join(root, "config.json"), JSON.stringify(config));
-  expect(config.experimentalFreshConversationPerTurn).toBe(false);
+  expect(config.experimentalFreshConversationPerTurn).toBe(true);
   expect(config.useSavedChats).toBe(false);
   delete config.useSavedChats;
   delete config.experimentalFreshConversationPerTurn;

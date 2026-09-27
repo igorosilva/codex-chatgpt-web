@@ -42,11 +42,18 @@ export function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
   );
 }
 
-export function chatGptTurnSupersededError(): ChatGptWebAdapterError {
-  return new ChatGptWebAdapterError(
-    "A newer Codex instruction superseded this ChatGPT response.",
-    { status: 499, errorType: "client_closed_request", code: "client_cancelled", retryable: false },
-  );
+export class ChatGptTurnSupersededError extends ChatGptWebAdapterError {
+  constructor() {
+    super(
+      "A newer Codex instruction superseded this ChatGPT response.",
+      { status: 499, errorType: "client_closed_request", code: "client_cancelled", retryable: false },
+    );
+    this.name = "ChatGptTurnSupersededError";
+  }
+}
+
+export function chatGptTurnSupersededError(): ChatGptTurnSupersededError {
+  return new ChatGptTurnSupersededError();
 }
 
 export function chatGptStoppedThinkingError(): ChatGptWebAdapterError {

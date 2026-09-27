@@ -2855,6 +2855,46 @@ test("the known terminal ChatGPT error alert returns a structured retryable fail
   expect(fixture.pressed).toEqual([]);
 });
 
+test("a newly appeared pre-response error ends the owned submission without the DOM grace timeout", async () => {
+  const fixture = dialogPage("An error occurred while generating the response.", "Retry", true);
+  Object.assign(fixture.page, { isClosed: () => false });
+  const waitForNewAssistantTurn = (ChatGptBrowserWorker.prototype as unknown as {
+    waitForNewAssistantTurn(page: Page, baseline: unknown): Promise<unknown>;
+  }).waitForNewAssistantTurn;
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    submissionDomState: async () => ({
+      turnIdentities: ["current-user"],
+      userIdentities: ["current-user"],
+      responseIdentities: [],
+      visibleStopButtonCount: 0,
+    }),
+  });
+
+  await expect(waitForNewAssistantTurn.call(worker, fixture.page, {
+    initialTurnIdentities: [],
+    domCache: {},
+    terminalErrors: { retryAction: false, messageTooLong: false, genericFailure: false },
+  })).rejects.toMatchObject({
+    code: "upstream_server_error",
+    retryable: true,
+  });
+});
+
+test.each([
+  "The message you submitted was too long. Please edit it and resubmit.",
+  "A mensagem enviada era longa demais. Edite-a e reenvie.",
+])("a visible oversized-message rejection is terminal and never retried inline: %s", async message => {
+  const fixture = dialogPage(message, "Retry", true);
+
+  await expect(throwIfChatGptTerminalErrorAlert(fixture.page)).rejects.toMatchObject({
+    status: 400,
+    errorType: "invalid_request_error",
+    code: "context_length_exceeded",
+    retryable: false,
+  });
+  expect(fixture.pressed).toEqual([]);
+});
+
 test("only a size rejection of the current owned browser submission is non-retryable", async () => {
   const frame = {};
   const page = Object.assign(new EventEmitter(), { mainFrame: () => frame });

@@ -87,7 +87,7 @@ export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]:not([data-turn-key] *)',
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]:not([data-turn-key] *)',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"]):not([data-turn-key] *)',
-  '[data-turn-key]:has([data-conversation-role="assistant"])',
+  '[data-turn-key]:has([data-conversation-role="assistant"], [data-chatgpt-agent-turn-start])',
   '[data-turn-key]:has(button[aria-label="Regenerate response"])',
   '[data-turn-key]:not(:has([data-user-message-bubble]))',
   '[data-chatgpt-search-unit-key]:has(> [data-conversation-role="assistant"])',
@@ -99,6 +99,14 @@ export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-turn-key]:has([data-user-message-bubble])',
   '[data-chatgpt-search-unit-key]:has([data-user-message-bubble]):not([data-turn-key] [data-chatgpt-search-unit-key])',
 ].join(", ");
+
+/** The current Activity renderer groups both roles under the user's stable turn key. */
+export function chatGptAssistantTurnSelector(identity: string): string {
+  const prefix = "group:assistant:";
+  return identity.startsWith(prefix)
+    ? `[data-turn-key=${JSON.stringify(identity.slice(prefix.length))}]:has([data-conversation-role="assistant"], [data-chatgpt-agent-turn-start])`
+    : `[data-turn-id=${JSON.stringify(identity)}]`;
+}
 
 export interface ChatGptEffortSliderState {
   min: number;
@@ -232,11 +240,19 @@ export async function selectChatGptEffortTick(
     "[data-model-picker-power-slider] [data-selected]",
   ].join(", "));
   const expected = state.max - state.min + 1;
-  if (await ticks.count() !== expected && expected === CHATGPT_EFFORT_SLIDER_MAX_OPTIONS) {
-    // Current Pro accounts expose the complete five-position semantic range while
-    // omitting data-locked from unlocked leaf ticks. Keep this fallback restricted
-    // to that authoritative full range so a Plus upsell cannot become selectable.
-    ticks = sliderContainer.locator("[data-selected]:not(:has([data-selected]))");
+  if (await ticks.count() !== expected
+    && (expected === 3 || expected === CHATGPT_EFFORT_SLIDER_MAX_OPTIONS)) {
+    // Current pickers expose either the three standard choices or the complete
+    // five-position Pro range without repeating data-locked on every unlocked
+    // leaf. Keep this fallback on the dedicated enabled power-slider owner so a
+    // historical shorter range containing an upsell cannot become selectable.
+    const enabledPowerSlider = await sliderContainer.evaluate(container => (
+      container.hasAttribute("data-model-picker-power-slider")
+      && Boolean(container.querySelector('[data-orientation="horizontal"][aria-disabled="false"]'))
+    ));
+    if (enabledPowerSlider) {
+      ticks = sliderContainer.locator("[data-selected]:not(:has([data-selected]))");
+    }
   }
   if (await ticks.count() !== expected) {
     throw new Error("ChatGPT effort ticks do not match its semantic slider range");
@@ -261,16 +277,20 @@ export async function readChatGptEffortAvailability(
     const menuOwned = ["menu", "group"].includes(container.getAttribute("role") ?? "")
       || container.getAttribute("data-testid") === "composer-intelligence-picker-content";
     return {
+      power,
       trustedOwner: power || menuOwned,
       locks: Array.from(container.querySelectorAll("[data-selected]:not(:has([data-selected]))"), tick =>
         tick.getAttribute("data-locked") ?? (power ? "false" : null)),
     };
   });
   const expected = state.max - state.min + 1;
-  // The current Pro picker proves all five choices through the semantic ARIA range,
-  // but no longer repeats data-locked="false" on each unlocked leaf. Missing lock
-  // metadata remains invalid for shorter ranges, where the last row may be an upsell.
-  const normalized = expected === CHATGPT_EFFORT_SLIDER_MAX_OPTIONS && availability.trustedOwner
+  // Current standard and Pro power sliders prove their choices through an enabled
+  // dedicated owner plus the semantic ARIA range, but no longer repeat
+  // data-locked="false" on every unlocked leaf. Other short historical ranges stay
+  // strict because their final position may be an upsell.
+  const structurallyUnlockedRange = (expected === 3 && availability.power)
+    || (expected === CHATGPT_EFFORT_SLIDER_MAX_OPTIONS && availability.trustedOwner);
+  const normalized = structurallyUnlockedRange
     ? availability.locks.map(lock => lock ?? "false")
     : availability.locks;
   if (normalized.length !== expected
@@ -278,6 +298,59 @@ export async function readChatGptEffortAvailability(
     throw new Error("ChatGPT effort availability could not be verified from its slider ticks");
   }
   return normalized.map(lock => lock === "false");
+}
+
+export async function readChatGptEffortSnapshot(
+  sliderContainer: Locator,
+  timeoutMs = 1_000,
+): Promise<ChatGptEffortSliderState & { available: boolean[] }> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    // Read range, selection and locks in one DOM revision. Separate Playwright reads can
+    // straddle React hydration and combine a newly mounted range with stale picker ticks.
+    const snapshot = await sliderContainer.evaluate(container => {
+      const sliders = container.querySelectorAll('[role="slider"]');
+      const slider = sliders.length === 1 ? sliders[0] : undefined;
+      const power = container.hasAttribute("data-model-picker-power-slider")
+        && Boolean(container.querySelector('[data-orientation="horizontal"][aria-disabled="false"]'));
+      const menuOwned = ["menu", "group"].includes(container.getAttribute("role") ?? "")
+        || container.getAttribute("data-testid") === "composer-intelligence-picker-content";
+      return {
+        sliderPresent: Boolean(slider),
+        min: slider?.getAttribute("aria-valuemin") ?? null,
+        max: slider?.getAttribute("aria-valuemax") ?? null,
+        value: slider?.getAttribute("aria-valuenow") ?? null,
+        power,
+        trustedOwner: power || menuOwned,
+        locks: Array.from(container.querySelectorAll("[data-selected]:not(:has([data-selected]))"), tick =>
+          tick.getAttribute("data-locked")),
+      };
+    });
+    const state = parseChatGptEffortSliderState(snapshot.min, snapshot.max, snapshot.value);
+    if (!state) {
+      if (snapshot.sliderPresent || Date.now() >= deadline) {
+        throw new Error("ChatGPT effort slider exposed an invalid ARIA range");
+      }
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+      continue;
+    }
+    const expected = state.max - state.min + 1;
+    // Preserve the compatibility rules used by the non-atomic reader: only the dedicated
+    // three-position power slider and trusted full five-position range may infer missing
+    // data-locked=false attributes. Four-position legacy/upsell layouts remain strict.
+    const structurallyUnlockedRange = (expected === 3 && snapshot.power)
+      || (expected === CHATGPT_EFFORT_SLIDER_MAX_OPTIONS && snapshot.trustedOwner);
+    const locks = structurallyUnlockedRange
+      ? snapshot.locks.map(lock => lock ?? "false")
+      : snapshot.locks;
+    if (locks.length === expected
+      && locks.every(lock => lock === "true" || lock === "false")) {
+      return { ...state, available: locks.map(lock => lock === "false") };
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+  } while (true);
+  throw new Error("ChatGPT effort availability could not be verified from its slider ticks");
 }
 
 async function anyVisible(locator: Locator): Promise<boolean> {

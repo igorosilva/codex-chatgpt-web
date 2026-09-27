@@ -20,7 +20,7 @@ import {
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
-import { ChatGptWebAdapterError } from "./adapter-error";
+import { ChatGptTurnSupersededError, ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
@@ -1470,6 +1470,21 @@ export function createChatGptWebAdapter(
             // Automatic browser turns keep their exact execution and journal for reconnect. Their
             // owned DOM observer can continue proving the same accepted ChatGPT submission.
             throw error;
+          }
+          if (error instanceof ChatGptTurnSupersededError) {
+            // Steering is a successful ownership transfer, not an upstream failure. The newer
+            // canonical instruction has already authenticated itself and retired this browser
+            // execution. Close the old stream with a terminal incomplete event so Codex does not
+            // render a misleading "stream disconnected before completion" failure.
+            emitRoundEvent({
+              type: "incomplete",
+              reason: "cancelled",
+              message: error.message,
+              retryable: false,
+              endTurn: false,
+            });
+            session.completeRound(roundKey);
+            return;
           }
           const turnError = submittedTurnFailure(session, error);
           const handledError = turnError instanceof ChatGptWebAdapterError && turnError.retryable

@@ -130,6 +130,8 @@ interface BrokerRequest {
   surfaceNonce?: string;
   finalAnswer?: string;
   contract?: "native" | "safe";
+  /** Native MCP may recover an unknown, model-corrupted handle only when one turn is eligible. */
+  allowUniqueActiveFallback?: boolean;
 }
 
 interface BrokerResponse {
@@ -154,7 +156,10 @@ export async function closeTurnBrokers(): Promise<void> {
 }
 
 function opaqueId(prefix: string): string {
-  return `${prefix}_${randomBytes(24).toString("base64url")}`;
+  // Short lowercase hex is substantially more reliable for an LLM to copy verbatim into a tool
+  // argument than mixed-case base64url. 96 random bits remain ample for this local, ephemeral,
+  // single-use capability while reducing dropped/substituted-character failures.
+  return `${prefix}_${randomBytes(12).toString("hex")}`;
 }
 
 function handleFingerprint(value: string): string {
@@ -1015,15 +1020,30 @@ export class TurnBroker implements TurnBrokerOwner {
     }
     if (request.method === "claim") {
       const contract = request.contract ?? "native";
-      const token = request.token;
-      if (typeof token !== "string" || token.length === 0) {
+      let token = request.token;
+      if ((typeof token !== "string" || token.length === 0) && contract === "safe") {
         throw new Error(contract === "safe" ? "request id is required" : "turn token is required");
       }
-      const channel = this.channels.get(token);
+      const suppliedToken = typeof token === "string" ? token : "";
+      let channel = token ? this.channels.get(token) : undefined;
       let activeChannel = channel && !channel.completionCommitted ? channel : undefined;
-      const retiredTurn = channel?.completionCommitted ? channel.traceId : this.retiredTokens.get(token);
+      const retiredTurn = channel?.completionCommitted ? channel.traceId : token ? this.retiredTokens.get(token) : undefined;
+      if (!activeChannel && retiredTurn === undefined && contract === "native" && request.allowUniqueActiveFallback === true) {
+        const eligible = [...this.channels.entries()].filter(([, candidate]) => (
+          !candidate.completionCommitted && candidate.safe === undefined
+        ));
+        if (eligible.length === 1) {
+          [token, activeChannel] = eligible[0]!;
+          channel = activeChannel;
+          console.error(
+            `[chatgpt-web] broker resolved unique active native turn`
+            + ` (suppliedHash=${suppliedToken ? handleFingerprint(suppliedToken) : "automatic"}, activeHash=${handleFingerprint(token)}, trace=${activeChannel.traceId})`,
+          );
+        }
+      }
       console.error(
-        `[chatgpt-web] broker claim received (tokenChars=${token.length}, tokenHash=${handleFingerprint(token)}, valid=${Boolean(activeChannel)}`
+        `[chatgpt-web] broker claim received (tokenChars=${suppliedToken.length}, tokenHash=${suppliedToken ? handleFingerprint(suppliedToken) : "automatic"}, valid=${Boolean(activeChannel)}`
+        + `${token && token !== suppliedToken ? `, resolvedHash=${handleFingerprint(token)}` : ""}`
         + `${activeChannel ? "" : `, retiredTurn=${retiredTurn ?? "unknown"}`})`,
       );
       if (!activeChannel) {
@@ -1032,6 +1052,7 @@ export class TurnBroker implements TurnBrokerOwner {
           + " This Codex Native action can no longer run."
           : `${contract === "safe" ? "request id" : "turn token"} is invalid, expired, or revoked`);
       }
+      if (!token) throw new Error("native turn resolution did not produce a token");
       if (activeChannel.safe) {
         if (contract !== "safe") throw new Error("Zero Risk request id requires the Zero Risk MCP contract");
         if (activeChannel.safe.state === "awaiting_start" && !activeChannel.safe.launcherSent) {
@@ -1065,13 +1086,13 @@ export class TurnBroker implements TurnBrokerOwner {
         if (!existing || existing.token !== token || existing.channel !== activeChannel) {
           throw new Error("turn token binding state is inconsistent");
         }
-        return { bindingId: activeChannel.bindingId, activityId, environment: activeChannel.environment };
+        return { bindingId: activeChannel.bindingId, activityId, token, environment: activeChannel.environment };
       }
       this.pending.delete(token);
       const bindingId = opaqueId("binding");
       activeChannel.bindingId = bindingId;
       this.bindings.set(bindingId, { token, channel: activeChannel });
-      return { bindingId, activityId, environment: activeChannel.environment };
+      return { bindingId, activityId, token, environment: activeChannel.environment };
     }
 
     const bindingId = request.bindingId;

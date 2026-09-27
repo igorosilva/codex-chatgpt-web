@@ -219,8 +219,15 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     proAvailable: false,
     experimentalBiggerContext: false,
     experimentalSkillAttachments: false,
-    experimentalContextAttachments: false,
-    experimentalFreshConversationPerTurn: false,
+    // Large canonical Codex histories routinely exceed ChatGPT's composer boundary even though
+    // they fit the selected model context. Transport them as integrity-checked text attachments
+    // by default; automatic mode can then retry a response without resubmitting a giant bubble.
+    experimentalContextAttachments: true,
+    // A retained ChatGPT transcript also retains expired per-turn MCP capabilities. Rebuild the
+    // browser conversation from Codex's authoritative history by default so every turn carries
+    // exactly one current workspace token. Users can still opt into retained browser chats when
+    // they deliberately accept that compatibility tradeoff.
+    experimentalFreshConversationPerTurn: true,
     useSavedChats: false,
     zeroRiskProEnabled: false,
     autoApproveToolCalls: true,
@@ -318,7 +325,10 @@ function inside(path: string, root: string): boolean {
   return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}${sep}`);
 }
 
-export function assertDurableRuntimeCommand(command: string[]): void {
+export function assertDurableRuntimeCommand(
+  command: string[],
+  { requireExecutable = true }: { requireExecutable?: boolean } = {},
+): void {
   if (command.length === 0) throw new Error("Runtime command is empty");
   const executable = command[0]!;
   if (!isAbsolute(executable)) throw new Error(`Runtime executable must be absolute: ${executable}`);
@@ -329,7 +339,9 @@ export function assertDurableRuntimeCommand(command: string[]): void {
       throw new Error(`Runtime command must not reference an ephemeral path: ${part}`);
     }
   }
-  if (!existsSync(executable)) throw new Error(`Runtime executable does not exist: ${executable}`);
+  if (requireExecutable && !existsSync(executable)) {
+    throw new Error(`Runtime executable does not exist: ${executable}`);
+  }
 }
 
 export function defaultChromeExecutable(
@@ -370,10 +382,18 @@ export function loadConfigForSetup(): AppConfig {
     raw.automaticAppName = CHATGPT_CONNECTOR_NAME;
     if (interactionMode === "automatic") raw.appName = CHATGPT_CONNECTOR_NAME;
   }
-  return parseConfig(raw, path);
+  // Setup replaces runtimeCommand with currentRuntimeCommand before persisting or starting the
+  // service. Keep validating its shape, absolute paths and non-ephemeral location, but allow the
+  // old executable itself to be absent: repairing a moved/uninstalled launcher is exactly why the
+  // setup path may be running. Normal config loading remains strict and still rejects it.
+  return parseConfig(raw, path, { allowMissingRuntimeExecutable: true });
 }
 
-function parseConfig(value: unknown, path: string): AppConfig {
+function parseConfig(
+  value: unknown,
+  path: string,
+  { allowMissingRuntimeExecutable = false }: { allowMissingRuntimeExecutable?: boolean } = {},
+): AppConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid configuration object in ${path}`);
   const parsed = value as Partial<AppConfig>;
   if (parsed.version !== 3) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
@@ -489,7 +509,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
     || parsed.runtimeCommand.some(part => typeof part !== "string" || !part.trim())) {
     throw new Error(`Invalid runtimeCommand in ${path}`);
   }
-  assertDurableRuntimeCommand(parsed.runtimeCommand as string[]);
+  assertDurableRuntimeCommand(parsed.runtimeCommand as string[], {
+    requireExecutable: !allowMissingRuntimeExecutable,
+  });
   if (parsed.extraHighAvailable !== undefined && typeof parsed.extraHighAvailable !== "boolean") {
     throw new Error(`Invalid extraHighAvailable in ${path}`);
   }
@@ -519,7 +541,8 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.experimentalContextAttachments !== undefined && typeof parsed.experimentalContextAttachments !== "boolean") {
     throw new Error(`Invalid experimentalContextAttachments in ${path}`);
   }
-  const experimentalContextAttachments = parsed.experimentalContextAttachments === true;
+  const experimentalContextAttachments = browserInteractionMode === "automatic"
+    && parsed.experimentalContextAttachments !== false;
   if (parsed.experimentalFreshConversationPerTurn !== undefined
     && typeof parsed.experimentalFreshConversationPerTurn !== "boolean") {
     throw new Error(`Invalid experimentalFreshConversationPerTurn in ${path}`);

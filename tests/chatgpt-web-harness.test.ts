@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
-import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
+import { ChatGptTurnSupersededError, ChatGptWebAdapterError, chatGptStoppedThinkingError, chatGptTurnSupersededError } from "../src/adapters/chatgpt-web/adapter-error";
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
@@ -965,6 +965,12 @@ describe("ChatGPT outer-native harness v4", () => {
     finishNew("done");
     await current.browserOutcome;
     sessions.clear();
+  });
+
+  test("identifies authenticated steering separately from ordinary client cancellation", () => {
+    const error = chatGptTurnSupersededError();
+    expect(error).toBeInstanceOf(ChatGptTurnSupersededError);
+    expect(error).toMatchObject({ code: "client_cancelled", retryable: false, status: 499 });
   });
 
   test("retires only the exact active native turn that Codex marked aborted", () => {
@@ -2647,6 +2653,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(listed.tools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
         "codex_exec",
+        "codex_generate_image_asset",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_view_image",
@@ -2663,10 +2670,10 @@ describe("ChatGPT outer-native harness v4", () => {
       // ChatGPT caches the complete tools/list contract under a connector identity.
       // An intentional hash change therefore requires an explicit connector refresh or identity migration.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
-        .toBe("9bb14902149337b52ce8598889497b1aba5a3265f28291df950bb38b5700a421");
+        .toBe("64b061b9634c89b437f641bec9536fc84697e2b74118cb991acecb7a861e437d");
       for (const tool of listed.tools) {
         const properties = tool.inputSchema.properties as Record<string, unknown>;
-        expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
+        expect(properties).not.toHaveProperty("turn_token");
         expect(properties).not.toHaveProperty("binding_id");
         expect(tool.outputSchema).toBeUndefined();
       }

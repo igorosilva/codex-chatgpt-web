@@ -44,12 +44,15 @@ turndown.addRule("chatGptCodeBlock", {
       : code.textContent ?? "").replace(/^\n|\n$/g, "");
     const header = wrapper.querySelector<HTMLElement>('[data-markdown-copy="exclude"]')
       ?.textContent?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+    const classLanguage = Array.from(code.classList)
+      .map(value => value.match(/^language-(.+)$/)?.[1] ?? "")
+      .find(Boolean) ?? "";
     const language = header === "plain text" || header === "plaintext" || header === "text"
       ? "text"
       : header === "javascript" || header === "js" ? "javascript"
         : header === "typescript" || header === "ts" ? "typescript"
           : header === "powershell" || header === "shell" || header === "bash" ? header
-            : "";
+            : classLanguage;
     const longestFence = Math.max(0, ...[...value.matchAll(/`+/g)].map(match => match[0].length));
     const fence = "`".repeat(Math.max(3, longestFence + 1));
     return `\n\n${fence}${language}\n${value}\n${fence}\n\n`;
@@ -406,6 +409,8 @@ export class ChatGptMarkdownBuffer {
 
     if (segment.sourceStart !== undefined) return undefined;
     if (!segment.tag) return undefined;
+    // Empty text is not semantic identity: rules and image-only blocks can share it.
+    if (!segment.text.trim()) return undefined;
     const semanticMatches = this.committed
       .map((committed, index) => ({ committed, index }))
       .filter(({ committed }) => committed.tag === segment.tag && committed.text === segment.text);
@@ -421,6 +426,7 @@ export class ChatGptMarkdownBuffer {
     if (exact.length === 1) return true;
     if (segment.sourceStart !== undefined) return false;
     if (!segment.tag) return false;
+    if (!segment.text.trim()) return false;
     return this.latest.filter(candidate => (
       candidate.tag === segment.tag && candidate.text === segment.text
     )).length === 1;

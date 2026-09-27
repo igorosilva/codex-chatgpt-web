@@ -6,6 +6,11 @@ import {
 export const CHATGPT_WEB_MODEL_ID = CHATGPT_WEB_BACKEND_MODEL;
 export const CHATGPT_WEB_LUNA_MODEL_ID = CHATGPT_WEB_LUNA_BACKEND_MODEL;
 
+// ChatGPT caches tools/list by connector identity. Older Codex Native2 action forms still require
+// the former turn_token field before they will dispatch a call. This fixed value is deliberately
+// not a capability: the MCP server ignores it and binds the sole active native turn internally.
+export const CHATGPT_WEB_NATIVE_COMPATIBILITY_TOKEN = "turn_automatic_binding_000000";
+
 export interface ChatGptWebCapabilities {
   localToolsEnabled: boolean;
   solAvailable: boolean;

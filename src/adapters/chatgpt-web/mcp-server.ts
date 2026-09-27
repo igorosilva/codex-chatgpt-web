@@ -10,10 +10,12 @@ import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
 import { observeMcpToolCalls } from "./mcp-observation";
+import { CHATGPT_WEB_NATIVE_COMPATIBILITY_TOKEN } from "./model";
 
 interface ClaimedTurn {
   bindingId: string;
   activityId: string;
+  token: string;
   environment: ChatGptTurnEnvironment & { expiresAt?: number };
 }
 
@@ -55,13 +57,18 @@ const ZERO_RISK_MCP_INSTRUCTIONS = [
   "If a tool returns an error, report that error instead of changing the request_id.",
 ].join(" ");
 
-function turnReferenceInput(contract: ChatGptMcpContract): Record<string, z.ZodString> {
+function turnReferenceInput(contract: ChatGptMcpContract): Record<string, z.ZodType> {
   return contract === "safe"
     ? { request_id: turnTokenSchema }
-    : { turn_token: turnTokenSchema };
+    : {
+      turn_token: turnTokenSchema.optional().default(CHATGPT_WEB_NATIVE_COMPATIBILITY_TOKEN).describe(
+        `Deprecated non-secret compatibility field. Always pass ${CHATGPT_WEB_NATIVE_COMPATIBILITY_TOKEN} when this field is present. Native turns are bound automatically and the value is not used as authority.`,
+      ),
+    };
 }
 
-function turnReference(contract: ChatGptMcpContract, input: object): string {
+function turnReference(contract: ChatGptMcpContract, input: object): string | undefined {
+  if (contract === "native") return undefined;
   const key = contract === "safe" ? "request_id" : "turn_token";
   const value = (input as Record<string, unknown>)[key];
   if (typeof value !== "string") throw new Error(`${key} is required`);
@@ -516,7 +523,7 @@ export async function runChatGptMcpServer(options: {
 
   const claimTurn = async (
     toolName: string,
-    turnToken: string,
+    turnToken: string | undefined,
     extra: McpRequestExtra,
   ): Promise<ClaimedTurn> => {
     console.error(`[chatgpt-web-mcp] ${toolName} scope=${requestScopeSummary(extra)}`);
@@ -524,12 +531,19 @@ export async function runChatGptMcpServer(options: {
     try {
       const claimed = await callTurnBroker<Omit<ClaimedTurn, "activityId">>(
         options.brokerSocketPath,
-        { method: "claim", token: turnToken, activityId, contract },
+        {
+          method: "claim",
+          token: turnToken,
+          activityId,
+          contract,
+          ...(contract === "native" ? { allowUniqueActiveFallback: true } : {}),
+        },
         contract === "safe" ? null : 5_000,
         extra.signal,
       );
       return { ...claimed, activityId };
     } catch (error) {
+      if (!turnToken) throw error;
       try {
         await settleTurnActivity(turnToken, activityId);
       } catch (cleanupError) {
@@ -564,7 +578,7 @@ export async function runChatGptMcpServer(options: {
 
   const withClaimedTurn = async <T>(
     toolName: string,
-    turnToken: string,
+    turnToken: string | undefined,
     extra: McpRequestExtra,
     action: (claimed: ClaimedTurn) => Promise<T> | T,
   ): Promise<T> => {
@@ -575,7 +589,7 @@ export async function runChatGptMcpServer(options: {
       // The broker's terminal fence treats even a fully local inventory lookup as live MCP work.
       // Settle the lease without the request AbortSignal: cancellation must not strand activity
       // and silently prevent every later completion candidate from committing.
-      await settleTurnActivity(turnToken, claimed.activityId);
+      await settleTurnActivity(claimed.token, claimed.activityId);
     }
   };
 

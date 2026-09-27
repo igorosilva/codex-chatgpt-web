@@ -10,7 +10,13 @@ import { ChatGptWebAdapterError } from "./adapter-error";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
-import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import {
+  CHATGPT_WEB_LUNA_MODEL_ID,
+  CHATGPT_WEB_MODEL_ID,
+  CHATGPT_WEB_NATIVE_COMPATIBILITY_TOKEN,
+  resolveChatGptWebModelMode,
+  type ChatGptWebCapabilities,
+} from "./model";
 import {
   CHATGPT_LUNA_CHECKPOINT_MARKER,
   CHATGPT_LUNA_CHECKPOINT_MAX_TOKENS,
@@ -32,6 +38,8 @@ export interface ChatGptWebPromptFile {
 export interface CompiledChatGptWebPrompt {
   text: string;
   images: ChatGptWebPromptImage[];
+  /** Exact latest human request, repeated inline only when the bulky context moves to files. */
+  activeUserRequest?: string;
   inputFiles?: ChatGptWebPromptFile[];
   skillFiles?: ChatGptSkillFile[];
   /** Transactional transport when Bigger Context is explicitly enabled. */
@@ -72,6 +80,28 @@ function splitUtf8Text(text: string, maxBytes: number): string[] {
   }
   if (end > start) chunks.push(text.slice(start, end));
   return chunks;
+}
+
+function splitInlineTransportResume(text: string): { context: string; resume?: string } {
+  const matches = [...text.matchAll(/<codex_transport_resume>[\s\S]*?<\/codex_transport_resume>/g)];
+  const latest = matches.at(-1);
+  if (!latest || latest.index === undefined) return { context: text };
+  const resume = latest[0];
+  return {
+    context: `${text.slice(0, latest.index)}${text.slice(latest.index + resume.length)}`.trim(),
+    resume,
+  };
+}
+
+function latestHumanUserRequest(messages: readonly CodexMessage[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== "user" || message.origin === "codex_skill"
+      || isReadableCompactionSummaryText(message.content)) continue;
+    const text = messageText(message).trim();
+    if (text) return text;
+  }
+  return undefined;
 }
 
 function compileInputFile(part: Extract<CodexContentPart, { type: "file" }>): ChatGptWebPromptFile {
@@ -121,7 +151,8 @@ export function largeContextAsAttachment(
   enabled: boolean,
 ): CompiledChatGptWebPrompt {
   if (!enabled || prompt.multipart || prompt.text.length < CHATGPT_CONTEXT_ATTACHMENT_THRESHOLD_CHARS) return prompt;
-  let transportPrompt = prompt;
+  const separated = splitInlineTransportResume(prompt.text);
+  let transportPrompt = { ...prompt, text: separated.context };
   let chunks = splitUtf8Text(transportPrompt.text, CHATGPT_CONTEXT_ATTACHMENT_MAX_BYTES);
   const occupiedSlots = () => transportPrompt.images.length
     + (transportPrompt.skillFiles?.length ?? 0)
@@ -161,7 +192,10 @@ export function largeContextAsAttachment(
   }
 
   const availableSlots = CHATGPT_MAX_INPUT_IMAGES - occupiedSlots();
-  if (chunks.length > availableSlots) return transportPrompt;
+  if (chunks.length > availableSlots) return {
+    ...transportPrompt,
+    text: [transportPrompt.text, separated.resume].filter(Boolean).join("\n"),
+  };
   const files = chunks.map((text, index) => {
     const digest = createHash("sha256").update(text).digest("hex").slice(0, 16);
     const part = chunks.length === 1 ? "" : `-part-${String(index + 1).padStart(2, "0")}-of-${String(chunks.length).padStart(2, "0")}`;
@@ -169,14 +203,36 @@ export function largeContextAsAttachment(
   });
   if (files.every(file => (prompt.skillFiles ?? []).some(existing => existing.name === file.name))) return prompt;
   const names = files.map(file => `\`${file.name}\``);
+  const safeActiveUserRequest = transportPrompt.activeUserRequest
+    ? JSON.parse(withoutRetiredTurnHandles(JSON.stringify(transportPrompt.activeUserRequest))) as string
+    : undefined;
+  const activeRequest = safeActiveUserRequest
+    ? [
+      "The following JSON string is the exact latest human-authored request and is authoritative over older requests, plans, interpretations, and assistant replies in the attached history:",
+      "<codex_active_user_request_json>",
+      JSON.stringify(safeActiveUserRequest),
+      "</codex_active_user_request_json>",
+    ]
+    : [];
+  const activeNativeBridge = separated.resume?.includes("Codex Native")
+    ? [
+      "Codex Native is selected and active for this response. Its tools are available through the connector even though the detailed capability contract is in the attached context file.",
+      "If the authoritative request requires inspecting or changing the local workspace, call a Codex Native tool now. The private MCP channel binds it to the sole active turn automatically; no secret token is needed.",
+      `For every Codex Native action whose form exposes the legacy turn_token field, always fill it with the fixed non-secret compatibility value ${CHATGPT_WEB_NATIVE_COMPATIBILITY_TOKEN} before dispatch. Never omit that exposed field, and do not invent, recover, or request another token.`,
+      "Do not claim that the executor, workspace, or editing tools are unavailable unless an actual Codex Native call returns that failure.",
+    ]
+    : [];
   return {
     ...transportPrompt,
     text: [
       chunks.length === 1
         ? `Read the complete attached file ${names[0]} before acting.`
         : `Read these ${chunks.length} attached context files completely and in order before acting: ${names.join(", ")}.`,
-      "Together they contain the full Codex transport contract and task context; preserve its instruction priority and execute the latest active request.",
+      "Together they contain the complete task context and durable Codex instructions; preserve their instruction priority.",
       "Do not summarize or discuss the transport file unless the request explicitly asks you to do so.",
+      ...activeRequest,
+      ...activeNativeBridge,
+      ...(separated.resume ? [separated.resume] : ["Execute the latest active user request now."]),
     ].join("\n"),
     skillFiles: [...(transportPrompt.skillFiles ?? []), ...files],
   };
@@ -802,7 +858,9 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "<codex_transport_resume>",
-      `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+      "The task context is complete. Codex Native is attached and automatically bound to this sole active turn; no secret turn token is required.",
+      `Call its tools now. For every action whose form exposes the legacy turn_token field, always pass the fixed non-secret compatibility value ${CHATGPT_WEB_NATIVE_COMPATIBILITY_TOKEN}; never wait for a validation failure first. Do not invent, recover, or request another token.`,
+      "Execute the latest active user request now and keep using the same tools for continuations after tool results.",
       "</codex_transport_resume>",
     ]
     : [
@@ -887,7 +945,7 @@ export function compileChatGptWebPrompt(
         return { tokens, chars };
       });
       multipart.parts = partitionMultipartContext(records, multipartParts!, budgets);
-      return { text: multipart.commit, images, ...attachments, multipart };
+      return { text: multipart.commit, images, ...attachments, multipart, activeUserRequest: latestHumanUserRequest(sourceMessages) };
     }
     const envelopeJson = withoutRetiredTurnHandles(JSON.stringify({ version: 3, system, messages }));
     const text = [
@@ -911,7 +969,7 @@ export function compileChatGptWebPrompt(
         "</codex_transport_resume>",
       ] : transportResume),
     ].join("\n");
-    return { text, images, ...attachments };
+    return { text, images, ...attachments, activeUserRequest: latestHumanUserRequest(sourceMessages) };
   };
 
   let sourceMessages = withoutSupersededModelSwitchContracts(
