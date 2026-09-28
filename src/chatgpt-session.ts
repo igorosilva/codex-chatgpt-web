@@ -125,7 +125,14 @@ export function chatGptEffortSlider(page: Page): { sliderContainer: Locator; sli
   const sliderContainer = page.locator(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR).filter({ visible: true }).last();
   // The current picker keeps ARIA values on a zero-width, aria-hidden semantic input.
   // Its visible container proves the active surface; the input proves the effort range.
-  return { sliderContainer, slider: sliderContainer.locator('[role="slider"]') };
+  // Some deployments briefly render two equivalent semantic inputs during a family
+  // transition. The newest node is the authoritative range for the active surface.
+  const semanticSlider = sliderContainer.locator('[role="slider"]');
+  const newestSlider = semanticSlider as Locator & { last?: () => Locator };
+  return {
+    sliderContainer,
+    slider: typeof newestSlider.last === "function" ? newestSlider.last() : semanticSlider,
+  };
 }
 
 function effortMenuSelectorForId(menuId: string): string {
@@ -437,13 +444,15 @@ export async function detectChatGptAccountCapabilities(
     const documentReady = await page.evaluate(() => document.readyState === "complete").catch(() => false);
     if (composerReady && formReady && documentReady) {
       absenceSince ??= Date.now();
-      if (Date.now() - absenceSince >= stableAbsenceMs) {
-        return { solAvailable: false, extraHighAvailable: false, proAvailable: false };
-      }
     } else {
       absenceSince = undefined;
     }
     if (Date.now() >= deadline) {
+      // The composer often becomes usable before the account model controls finish
+      // hydrating. Only classify a Luna-only account after the full inspection budget.
+      if (absenceSince !== undefined && Date.now() - absenceSince >= stableAbsenceMs) {
+        return { solAvailable: false, extraHighAvailable: false, proAvailable: false };
+      }
       throw new Error("ChatGPT account capability probe did not reach a stable composer state");
     }
     await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
@@ -453,14 +462,20 @@ export async function detectChatGptAccountCapabilities(
   const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
   if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
   try {
-    const { sliderContainer, slider } = chatGptEffortSlider(page);
+    const { sliderContainer } = chatGptEffortSlider(page);
     const timeout = options.selectorTimeoutMs ?? 70_000;
     try {
-      // Hydration can expose model rows before the authoritative effort slider. Wait for the
-      // slider first so a slow pt-BR/Pro surface is not cached as an Instant-only account.
+      // Keep range, selection and lock metadata on one bounded atomic snapshot. This
+      // supports current power sliders and the historical semantic-locator fallback.
       await sliderContainer.waitFor({ state: "visible", timeout });
-      await slider.waitFor({ state: "attached", timeout });
+      await readChatGptEffortSnapshot(sliderContainer);
     } catch (error) {
+      if (error instanceof Error && error.message.includes("invalid ARIA range")) {
+        throw new Error(
+          "ChatGPT model controls are unavailable. Reload ChatGPT and run Repair again.",
+          { cause: error },
+        );
+      }
       const label = await effortButton.getAttribute("aria-label").catch(() => null);
       const structuralPicker = await effortButton.getAttribute("data-codex-intelligence-trigger").catch(() => null);
       if (structuralPicker !== "true"
@@ -473,19 +488,22 @@ export async function detectChatGptAccountCapabilities(
       if (!await compactSolOption.isVisible().catch(() => false)) throw error;
       return { solAvailable: true, extraHighAvailable: false, proAvailable: false };
     }
-    const state = parseChatGptEffortSliderState(
-      await slider.getAttribute("aria-valuemin"),
-      await slider.getAttribute("aria-valuemax"),
-      await slider.getAttribute("aria-valuenow"),
-    );
-    if (!state) {
-      throw new Error(
-        "ChatGPT model controls are unavailable. Reload ChatGPT and run Repair again.",
-        { cause: new Error("ChatGPT effort slider exposed an invalid ARIA range") },
-      );
-    }
-    const available = await readChatGptEffortAvailability(sliderContainer, state);
-    return { solAvailable: true, extraHighAvailable: available[3] === true, proAvailable: available[4] === true };
+    const { available } = await readChatGptEffortSnapshot(sliderContainer);
+    const menuWithRoles = menu as Locator & {
+      getByRole?: (role: "menuitemradio", options: { name: RegExp; exact: boolean }) => Locator;
+    };
+    const proOption = typeof menuWithRoles.getByRole === "function"
+      ? menuWithRoles.getByRole("menuitemradio", { name: /^Pro$/i, exact: true }).filter({ visible: true })
+      : undefined;
+    // New ChatGPT surfaces expose Pro as a separate Latest-family row instead of a
+    // fifth slider tick. Presence proves entitlement; actual turns still fail closed
+    // if that row is disabled by a transient quota or surface restriction.
+    const separateProAvailable = proOption ? await proOption.count() === 1 : false;
+    return {
+      solAvailable: true,
+      extraHighAvailable: available[3] === true,
+      proAvailable: separateProAvailable || available[4] === true,
+    };
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }

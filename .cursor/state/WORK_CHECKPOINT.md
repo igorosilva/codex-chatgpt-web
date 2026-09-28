@@ -51,7 +51,21 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 - Completed: restarted local production after the shared-helper correction. Runtime PID 19504 and browser-helper PID 34820 remain alive, health is `ok`, turns are accepted, and active HTTP/browser turn counts returned to zero.
 - Completed: final same-chat continuity smoke executed two sequential user turns with real Native tools. Turn 1 ran `(Get-Location).Path` and returned `CONTINUITY_FIRST_OK F:\codex-chatgpt-web`; turn 2 reused the first response, ran `git branch --show-current`, and returned `CONTINUITY_SECOND_OK main`.
 - Completed: post-restart logs show both final smoke traces following `queued -> delivered -> completed -> final -> retired` with no pending tools. Across 167 post-restart events there were zero `EPIPE`, unhandled `AbortError`, helper-exit, stream-disconnect, invalid-token, or context-window fatal patterns.
-- Pending: user acceptance retry of the actual dossier UI edit; the equivalent long-context/two-message transport is now proven end to end without touching the dossier repository.
+- Completed: resumed the selective ZIP merge on `develop` and audited the remaining semantic differences instead of replacing whole files. The custom connector-name feature remains intentionally excluded.
+- Completed: current and legacy model controls now coexist with the 2026 ChatGPT model surface: compact pickers select the first/final enabled choices, GPT-6 Pro is discovered and selected through its separate exact `Pro` row, the five-position historical slider still works, and explicit GPT-5.6 Pro fails closed rather than silently switching families.
+- Completed: long/multipart turns now retain external-progress evidence for up to 30 minutes, and in-flight Native tool calls veto false DOM-health failures and automatic overthinking regeneration.
+- Completed: diagnostics record document readiness and structural unmatched-editor metadata without capturing values, labels, HTML, or conversation text. Composer preparation also avoids a 30-second wait when an empty composer has no Send control and preserves concrete navigation/composer errors instead of misreporting expired authentication.
+- Completed: Zero Risk Copy refreshes the user handoff deadline and Sent preserves the exact prompt until the connector really starts, allowing a safe resend after premature confirmation.
+- Completed: the launcher disables parent-window background throttling, rechecks the saved ChatGPT session at smoke execution time, can satisfy the smoke gate during installation, suppresses the false sign-in empty state while session verification is loading, restores the previous Codex route before quit, and includes native pt-BR launcher/tray/dialog copy.
+- Completed: the ZIP's separate `restore-native` settings action was not ported because the current implementation already restores the route on quit, startup failure, and uninstall with stronger rollback semantics; adding the older action would create competing state transitions.
+- Completed: the safe production restart loaded the resumed merge in runtime PID 16556. Health is `ok`, turns are accepted, and active HTTP/browser turns returned to zero.
+- Completed: the authenticated live catalog exposes five routes for the current non-Pro account. Instant/Low routes advertise 1,050,000 / 95% / 32,000 and Sol Medium/High routes advertise 1,050,000 / 95% / 80,000 for context / effective percent / auto-compaction.
+- Completed: a two-message same-chat live smoke passed after the restart. Turn 1 called Native execution and returned `LIVE_FIRST_OK F:\\codex-chatgpt-web`; turn 2 resumed the exact same Codex thread, streamed Activity progress, called Native execution again, and returned `LIVE_SECOND_OK develop`.
+- Completed: 124 launcher records after the restart contained zero errors and zero fatal-pattern matches for `EPIPE`, unhandled `AbortError`, helper exit, stream disconnect, invalid token, context-window exhaustion, or false Native-unavailable completion. Both smoke traces reached completed/final/retired state with no pending tools.
+- Completed: a real remote compaction at 21:01 UTC exposed a new 2026 DOM nesting variant. The same assistant identity appeared on an outer `data-turn-key` owner and an inner `data-chatgpt-search-message-ids` Activity/search unit; the union locator counted both and aborted three fresh handoff attempts with `ChatGPT exposed 2 DOM nodes for the bound assistant turn`.
+- Completed: `chatGptTurnLocator()` now excludes nested duplicate representations of the same identity and keeps the canonical outer owner across legacy `data-turn-id`, Activity `data-turn-key`, and search-unit layouts. TypeScript passed and a live Chromium synthetic DOM probe reduced the failing shape from two matches to one canonical `SECTION`.
+- Completed: safe restart loaded the selector correction in runtime PID 44476. A live responses/memento compact request completed, followed by the exact v2 `compaction_trigger` protocol that previously failed; it returned status `completed`, exactly one `compaction` output, and a 1,429-character encrypted checkpoint envelope. Post-restart logs contain zero duplicate-turn failures and zero structured context-handoff failures.
+- Pending: user acceptance retry of the actual dossier UI edit; the dossier repository itself remains untouched.
 
 ## Evidence and validation
 
@@ -117,6 +131,12 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 - Before the final patch, an intentionally abandoned Native tool request expired while another browser turn was active. Its progress waiter raised an unhandled `DOMException [AbortError]`, the shared helper exited, and the second trace lost its MCP progress mirror with `EPIPE`. This supplied direct causal evidence for the detached-promise correction in `withBrowserTurnAbort()`.
 - After the correction and restart, the same-chat two-turn smoke passed with one `exec_command` round in each turn. Traces `b296e606d4be` and `5a1140affad4` both retired with `completionCommitted=true`, no pending/queued/delivered tools, and no post-restart fatal helper patterns.
 - Final source checks after the root correction: root TypeScript passed; launcher TypeScript plus Vite production build passed; `chatgpt-session` and `turn-broker-lifecycle` passed 36/36; the browser helper remains alive under runtime PID 19504.
+- Resumed merge validation: root TypeScript passed; Electron `main.cjs` and `browser-host.cjs` passed `node --check`; launcher TypeScript plus Vite production build passed; the source browser helper rebuilt successfully at `.launcher-runtime/browser-helper.cjs`.
+- Focused selector/DOM validation passed 30/30 across `chatgpt-session` and `browser-response-dom`; launcher browser-host validation passed 111/111.
+- Catalog/model validation emitted 25 passes and one known stale assertion that still expects the superseded 950,000/90% attachment contract. The implementation intentionally keeps the fixed 1,050,000/95% safety ceiling with route-specific 32,000/80,000/95,000 compaction triggers; tests were not modified per workspace rules.
+- Safe restart log: replacement runtime PID 16556, version 6.1.0, healthy and accepting turns.
+- Live same-chat thread `01a0e485-ce61-7df3-a33b-dc6aa0857129` completed both turns through Native execution; its second turn used the `develop` workspace and emitted the newly supported public Activity progress before tool dispatch.
+- The latest browser diagnostic contains `state.documentComplete` and an empty structural `state.composer.unrecognizedEditors` array, confirming the privacy-safe diagnostic extension is live.
 
 ## Modified files
 
@@ -162,4 +182,4 @@ Stabilize the Electron-hosted ChatGPT Web integration across current and legacy 
 
 ## Next exact step
 
-All currently executable work is complete. The next product step is the user's acceptance retry in the real dossier chat. Preserve the uncommitted working tree; do not commit or push without an explicit request.
+The remote compact regression is corrected and proven live. The next product step is the user's acceptance retry in the real dossier chat. Preserve the uncommitted working tree; do not commit, push, or merge into `main` without an explicit request.

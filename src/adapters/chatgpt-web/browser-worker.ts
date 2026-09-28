@@ -1241,9 +1241,12 @@ export const browserStageTimeouts = {
 function chatGptTurnLocator(page: Page, identity: string): Locator {
   const selector = JSON.stringify(identity);
   return page.locator([
-    `[data-turn-id=${selector}]`,
-    `[data-turn-key=${selector}]`,
-    `[data-chatgpt-search-message-ids~=${selector}]`,
+    `[data-turn-id=${selector}]:not([data-turn-id=${selector}] [data-turn-id=${selector}])`,
+    `[data-turn-key=${selector}]:not([data-turn-key=${selector}] [data-turn-key=${selector}])`,
+    `[data-chatgpt-search-message-ids~=${selector}]`
+      + `:not([data-turn-id=${selector}] [data-chatgpt-search-message-ids~=${selector}])`
+      + `:not([data-turn-key=${selector}] [data-chatgpt-search-message-ids~=${selector}])`
+      + `:not([data-chatgpt-search-message-ids~=${selector}] [data-chatgpt-search-message-ids~=${selector}])`,
   ].join(", "));
 }
 
@@ -1845,6 +1848,8 @@ export const MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS = 8;
  * long turn that keeps calling tools is never penalised for taking a long time.
  */
 export const CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS = 10 * 60_000;
+export const CHATGPT_LARGE_TASK_PROGRESS_STALL_CEILING_MS = 30 * 60_000;
+export const CHATGPT_LARGE_TASK_TOKEN_THRESHOLD = 100_000;
 
 /** Tolerated clock difference between the recording daemon and the observing helper process. */
 export const CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS = 5_000;
@@ -1853,6 +1858,7 @@ export const CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS = 5_000;
 export function chatGptExternalProgressSuppressesDomHealth(
   snapshot: ChatGptExternalTurnProgressSnapshot | undefined,
   now: number,
+  stallCeilingMs = CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS,
 ): boolean {
   if (!chatGptExternalProgressIsLive(snapshot, now, CHATGPT_RESPONSE_DOM_GRACE_MS)) return false;
   const lastProgressAt = snapshot?.lastProgressAt;
@@ -1861,7 +1867,7 @@ export function chatGptExternalProgressSuppressesDomHealth(
   // A timestamp from the future would keep `age` below the ceiling forever. Recorded activity can
   // only precede the observation, so anything meaningfully ahead of now is not evidence at all.
   return age >= -CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS
-    && age < CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS;
+    && age < stallCeilingMs;
 }
 
 export function chatGptStoppedThinkingIsTerminal(
@@ -2205,6 +2211,7 @@ class ChatGptBrowserDiagnostics {
               temporaryChat: currentUrl.searchParams.has("temporary-chat"),
             },
             titleChars: document.title.length,
+            documentComplete: document.readyState === "complete",
             viewport: { width: innerWidth, height: innerHeight },
             surfaceBound: typeof (globalThis as typeof globalThis & { __CODEX_WEB_GPT_SURFACE_ID__?: unknown })
               .__CODEX_WEB_GPT_SURFACE_ID__ === "string",
@@ -2221,6 +2228,22 @@ class ChatGptBrowserDiagnostics {
                 contentEditable: (element as HTMLElement).isContentEditable,
                 focused: element === document.activeElement,
               })),
+              // Retain only the structure of unmatched editor controls. Values,
+              // labels, HTML and conversation text remain excluded from diagnostics.
+              unrecognizedEditors: composers.length === 0
+                ? [...document.querySelectorAll('textarea, [contenteditable="true"]')]
+                  .filter(rendered).slice(0, 10).map(element => ({
+                    tag: element.tagName.toLowerCase(),
+                    role: element.getAttribute("role"),
+                    attributes: Object.fromEntries([
+                      "id", "data-testid", "data-lexical-editor", "data-composer-markdown",
+                      "contenteditable", "placeholder", "autofocus", "disabled", "readonly",
+                    ].map(name => [name, element.hasAttribute(name)])),
+                    inForm: Boolean(element.closest("form")),
+                    inComposerForm: Boolean(element.closest("form[data-chatgpt-composer]")),
+                    focused: element === document.activeElement,
+                  }))
+                : [],
               selectedConnectorCount: selectedConnectors.length,
               exactSelectedConnectorCount: selectedConnectors.filter(
                 element => element.getAttribute("data-keyword") === appName,
@@ -2868,13 +2891,27 @@ export class ChatGptBrowserWorker {
         }
       }
       const items = activation.menu.locator(CHATGPT_EFFORT_ITEM_SELECTOR).filter({ visible: true });
-      if (await items.count() < 2) {
+      const itemCount = await items.count();
+      if (itemCount < 2) {
         await page.keyboard.press("Escape").catch(() => {});
         throw chatGptModelControlUnavailableAdapterError(
           "ChatGPT's compact model picker did not expose its Thinking option",
         );
       }
-      const target = items.nth(mode.effort === "low" ? 0 : 1);
+      // Compact pickers may insert unrelated model-family rows. Select the first
+      // enabled row for Instant and the final enabled row for Thinking.
+      const enabledItems: Locator[] = [];
+      for (let index = 0; index < itemCount; index += 1) {
+        const item = items.nth(index);
+        if (await item.getAttribute("aria-disabled") !== "true") enabledItems.push(item);
+      }
+      const target = mode.effort === "low" ? enabledItems[0] : enabledItems.at(-1);
+      if (!target) {
+        await page.keyboard.press("Escape").catch(() => {});
+        throw chatGptModelControlUnavailableAdapterError(
+          "ChatGPT's compact model picker has no enabled effort option",
+        );
+      }
       if (await target.getAttribute("aria-checked") !== "true") {
         await target.click({ force: true, timeout: 5_000 });
       }
@@ -2898,6 +2935,57 @@ export class ChatGptBrowserWorker {
     if (modelFamily) activation = await selectChatGptModelFamily(
       page, activation, modelFamily, () => activateChatGptEffortMenu(page, currentEffort),
     );
+    const menuWithRoles = activation.menu as Locator & {
+      getByRole?: (role: "menuitemradio", options: { name: RegExp; exact: boolean }) => Locator;
+    };
+    const separateProOption = typeof menuWithRoles.getByRole === "function"
+      ? menuWithRoles.getByRole("menuitemradio", { name: /^Pro$/i, exact: true })
+      : undefined;
+    if (mode.effort === "max" && separateProOption && await separateProOption.count() === 1) {
+      // Current ChatGPT exposes Pro as a separate Latest-family row. It belongs to
+      // GPT-6 and must not silently satisfy an explicit GPT-5.6 Pro request.
+      if (modelFamily === "5.6") {
+        await page.keyboard.press("Escape").catch(() => {});
+        throw chatGptModelControlUnavailableAdapterError(
+          "ChatGPT now exposes Pro only through the GPT-6 Latest family; GPT-5.6 Pro is no longer selectable",
+        );
+      }
+      const proDataDisabled = await separateProOption.getAttribute("data-disabled");
+      if (await separateProOption.getAttribute("aria-disabled") === "true"
+        || (proDataDisabled !== null && proDataDisabled !== "false")) {
+        await page.keyboard.press("Escape").catch(() => {});
+        throw chatGptModelControlUnavailableAdapterError("ChatGPT's Pro option is currently unavailable");
+      }
+      if (await separateProOption.getAttribute("aria-checked") !== "true") {
+        await separateProOption.click({ force: true, timeout: 5_000 });
+      }
+      await settleChatGptUi();
+      if (await currentEffort.getAttribute("aria-expanded") === "true") {
+        await page.keyboard.press("Escape");
+        await settleChatGptUi();
+      }
+      const selectedMode: SelectedChatGptWebModelMode = {
+        ...mode,
+        ...(modelFamily ? { modelFamily } : {}),
+        selection: { url: page.url(), label: (await currentEffort.innerText()).trim() },
+        ...(trackUsage ? {
+          usageModel: modelFamily === "6" ? "gpt-6-pro" as const : "pro-unknown" as const,
+        } : {}),
+      };
+      await this.assertSelectedEffort(page, selectedMode, false);
+      const confirmation = await activateChatGptEffortMenu(page, currentEffort);
+      try {
+        const confirmedPro = confirmation.menu.getByRole("menuitemradio", { name: /^Pro$/i, exact: true });
+        if (await confirmedPro.count() !== 1 || await confirmedPro.getAttribute("aria-checked") !== "true") {
+          throw chatGptModelControlUnavailableAdapterError("ChatGPT did not persist the Pro selection");
+        }
+      } finally {
+        await page.keyboard.press("Escape").catch(() => {});
+      }
+      await this.assertSelectedEffort(page, selectedMode, false);
+      await captureDiagnostic?.("separate-pro-selection-confirmed");
+      return selectedMode;
+    }
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     }
@@ -2952,7 +3040,7 @@ export class ChatGptBrowserWorker {
     };
     let sliderState = await readAvailableEffort(sliderContainer, activation.menu);
     const initialMin = sliderState.min;
-    const targetValue = sliderState.min + uiEffortIndex;
+    const targetValue = initialMin + uiEffortIndex;
     while (sliderState.value !== targetValue) {
       await throwIfChatGptRateLimitDialog(page);
       await selectChatGptEffortTick(sliderContainer, sliderState, targetValue)
@@ -2975,8 +3063,7 @@ export class ChatGptBrowserWorker {
     }
     await settleChatGptUi();
     const selectedState = await readAvailableEffort(sliderContainer, activation.menu);
-    if (selectedState.min !== sliderState.min
-      || selectedState.max !== sliderState.max || selectedState.value !== targetValue) {
+    if (selectedState.min !== initialMin || selectedState.value !== targetValue) {
       throw chatGptModelControlUnavailableAdapterError("ChatGPT changed its effort range or selection before the menu closed");
     }
     await captureDiagnostic?.("effort-selected");
@@ -2994,8 +3081,7 @@ export class ChatGptBrowserWorker {
     await readChatGptEffortSnapshot(confirmation.sliderContainer, 5_000)
       .catch(error => { throw chatGptModelControlUnavailableAdapterError(String(error)); });
     const confirmedState = await readAvailableEffort(confirmation.sliderContainer, confirmation.menu);
-    if (confirmedState.min !== selectedState.min
-      || confirmedState.max !== selectedState.max || confirmedState.value !== targetValue) {
+    if (confirmedState.min !== initialMin || confirmedState.value !== targetValue) {
       throw chatGptModelControlUnavailableAdapterError("ChatGPT did not persist the requested effort after closing its menu");
     }
     if (modelFamily) await assertChatGptModelFamily(confirmation, modelFamily, mode.effort, uiEffortIndex, 1_000);
@@ -3017,12 +3103,13 @@ export class ChatGptBrowserWorker {
     const composer = await this.activeComposer(page);
     const controls = composer.locator("xpath=ancestor::form[1]")
       .locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
-    if (page.url() !== mode.selection.url || !mode.selection.label || await controls.count() !== 1) {
+    if (page.url() !== mode.selection.url || await controls.count() < 1) {
       throw chatGptModelControlUnavailableAdapterError("ChatGPT changed the selected model's browser surface before submission");
     }
-    const control = controls.first();
-    if ((await control.innerText()).trim() !== mode.selection.label
-      || await control.getAttribute("aria-expanded") !== "false"
+    // The trigger can remount after selection and collapse its label to a generic
+    // localized Thinking value. Reopening the semantic picker below is authoritative.
+    const control = controls.last();
+    if (await control.getAttribute("aria-expanded") !== "false"
       || !await composer.isEditable()) {
       throw chatGptModelControlUnavailableAdapterError(
         "ChatGPT did not retain the selected effort in its ready composer; the message was not submitted",
@@ -3031,11 +3118,22 @@ export class ChatGptBrowserWorker {
     if (verifyFamily && mode.modelFamily && mode.uiEffortIndex !== null) {
       const menu = await activateChatGptEffortMenu(page, control);
       try {
-        await assertChatGptModelFamily(menu, mode.modelFamily, mode.effort, mode.uiEffortIndex);
+        const semanticMenu = menu.menu as Locator & {
+          getByRole?: (role: "menuitemradio", options: { name: RegExp; exact: boolean }) => Locator;
+        };
+        if (mode.effort === "max" && typeof semanticMenu.getByRole === "function") {
+          const proOption = semanticMenu.getByRole("menuitemradio", { name: /^Pro$/i, exact: true });
+          if (mode.modelFamily !== "6" || await proOption.count() !== 1
+            || await proOption.getAttribute("aria-checked") !== "true") {
+            throw chatGptModelControlUnavailableAdapterError("ChatGPT no longer has the requested GPT-6 Pro selection");
+          }
+        } else {
+          await assertChatGptModelFamily(menu, mode.modelFamily, mode.effort, mode.uiEffortIndex);
+        }
       } finally {
         await page.keyboard.press("Escape");
       }
-      if (page.url() !== mode.selection.url || (await control.innerText()).trim() !== mode.selection.label
+      if (page.url() !== mode.selection.url
         || await control.getAttribute("aria-expanded") !== "false" || !await composer.isEditable()) {
         throw chatGptModelControlUnavailableAdapterError("ChatGPT changed the model while checking its family before submission");
       }
@@ -3089,12 +3187,9 @@ export class ChatGptBrowserWorker {
       });
       await captureDiagnostic?.(useSavedChats ? "saved-chat-navigation-complete" : "temporary-chat-navigation-complete");
     }
-    let composer: Locator;
-    try {
-      composer = await this.activeComposer(page);
-    } catch {
-      throw new Error("ChatGPT web login is expired or the new chat surface is unavailable");
-    }
+    // A failed page observation is not proof that authentication expired. Preserve the
+    // concrete composer/navigation error; authenticated-session verification owns login failures.
+    let composer = await this.activeComposer(page);
     // A helper/process restart can leave an unsent connector draft or uploaded attachment in the
     // launcher-owned Temporary Chat. ChatGPT keeps the same URL, so URL equality alone does not
     // prove a fresh composer. An enabled Send button on an otherwise new-chat surface is also
@@ -3103,8 +3198,9 @@ export class ChatGptBrowserWorker {
     const composerForm = composer.locator("xpath=ancestor::form[1]");
     const draftText = await composer.evaluate(element => element.textContent?.trim() ?? "");
     const hasSelectedConnector = await this.connectorIsSelected(composer);
-    const hasSubmittableDraft = await composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR).first()
-      .isEnabled().catch(() => false);
+    const sendControls = composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR);
+    const hasSubmittableDraft = await sendControls.count().catch(() => 0) > 0
+      && await sendControls.first().isEnabled().catch(() => false);
     // An upload in progress keeps Send disabled, so button state alone cannot prove that a new-chat
     // composer is clean. Count attachment tiles directly to avoid inheriting files from an aborted
     // or helper-restarted turn.
@@ -4268,6 +4364,7 @@ export class ChatGptBrowserWorker {
       const externalProgressLive = chatGptExternalProgressSuppressesDomHealth(
         externalProgressSnapshot,
         Date.now(),
+        CHATGPT_LARGE_TASK_PROGRESS_STALL_CEILING_MS,
       );
       const externalToolCallsInFlight = chatGptExternalToolCallsAreInFlight(externalProgressSnapshot);
       // ChatGPT may briefly paint its "thinking stopped" status while an acknowledged Codex tool
@@ -4298,7 +4395,7 @@ export class ChatGptBrowserWorker {
         running,
         currentText: snapshot.visibleText,
         completionActionVisible: snapshot.completionActionVisible,
-        externalProgressLive,
+        externalProgressLive: externalProgressLive || externalToolCallsInFlight,
       });
       if (domError) throw new Error(domError);
       if (completionTracker.update({
@@ -5917,6 +6014,10 @@ export class ChatGptBrowserWorker {
             CHATGPT_TOOL_COMPLETION_SETTLE_MS,
           )
         : new ChatGptCompletionTracker();
+      const progressStallCeilingMs = prepared.multipart
+        || estimatedInputTokens >= CHATGPT_LARGE_TASK_TOKEN_THRESHOLD
+        ? CHATGPT_LARGE_TASK_PROGRESS_STALL_CEILING_MS
+        : CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS;
       const recordFinalUsage = await usageSubmission();
       const finalSubmissionEvidence = await this.runStage(
         turn.traceId,
@@ -6129,6 +6230,7 @@ export class ChatGptBrowserWorker {
         const externalProgressLive = chatGptExternalProgressSuppressesDomHealth(
           externalProgressSnapshot,
           Date.now(),
+          progressStallCeilingMs,
         );
         const externalToolCallsInFlight = chatGptExternalToolCallsAreInFlight(externalProgressSnapshot);
         // A child operation can remount the ChatGPT status UI and expose "thinking stopped" even
@@ -6153,7 +6255,11 @@ export class ChatGptBrowserWorker {
         const running = await stop.isVisible().catch(() => false);
         if (running) sawRunning = true;
         if (automaticOverthinkingRecoveries < 1
-          && overthinkingRecovery.update(snapshot.visibleText, running, externalProgressLive)) {
+          && overthinkingRecovery.update(
+            snapshot.visibleText,
+            running,
+            externalProgressLive || externalToolCallsInFlight,
+          )) {
           await diagnostics.capture(page, "overthinking-stall-detected");
           await regenerateStalledChatGptResponse(page, responseTurn.locator, turn.abortSignal);
           automaticOverthinkingRecoveries += 1;
@@ -6212,7 +6318,7 @@ export class ChatGptBrowserWorker {
             running,
             currentText: snapshot.visibleText,
             completionActionVisible: snapshot.completionActionVisible,
-            externalProgressLive,
+            externalProgressLive: externalProgressLive || externalToolCallsInFlight,
           });
           if (domError) throw new Error(domError);
           const completionReady = completionTracker.update({
@@ -6324,7 +6430,7 @@ export class ChatGptBrowserWorker {
             running,
             currentText: "",
             completionActionVisible: false,
-            externalProgressLive,
+            externalProgressLive: externalProgressLive || externalToolCallsInFlight,
           });
           if (domError) throw new Error(domError);
         }
