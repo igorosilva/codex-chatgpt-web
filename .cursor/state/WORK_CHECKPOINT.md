@@ -2,11 +2,11 @@
 
 ## Objetivo
 
-Transformar o estado completo atual da branch `joao-main`, incluindo alterações não commitadas, no estado definitivo de `develop`, publicar no `origin` e manter somente `main` e `develop` localmente e no `origin`.
+Tornar `C:\Users\igors\OneDrive\Documentos\frontend-visual-qa` a versão definitiva da skill, tanto na instalação ativa quanto no pacote usado por reinstalações, impedindo sua remoção por seleção opcional.
 
 ## Etapa atual
 
-Concluída: `develop` contém o snapshot definitivo e somente `main` e `develop` permanecem localmente e no `origin`.
+Concluída localmente: fonte autoritativa, pacote de reinstalação e instalação ativa estão idênticos; a skill passou a ser obrigatória no launcher.
 
 ## Concluído
 
@@ -20,6 +20,10 @@ Concluída: `develop` contém o snapshot definitivo e somente `main` e `develop`
 - `origin/fork` e `origin/forkfork` foram excluídas.
 - As branches locais `codex/web-image-handoff`, `fork`, `forkfork` e `joao-main` foram excluídas.
 - Confirmado que somente `main` e `develop` permanecem localmente e no `origin`.
+- Sincronizados `.managed-by-codex-web-gpt`, `SKILL.md` e `agents/openai.yaml` da pasta fornecida para o pacote e a instalação ativa.
+- Confirmada igualdade SHA-256 dos três arquivos nas três localizações.
+- Adicionada `frontend-visual-qa` a `REQUIRED_SKILLS` para impedir remoção por seleção salva antiga ou vazia.
+- Confirmado que não existe `src/skills`, portanto `launcher/assets/skills` é a fonte local de reinstalação com precedência efetiva.
 
 ## Parcial
 
@@ -27,7 +31,7 @@ Concluída: `develop` contém o snapshot definitivo e somente `main` e `develop`
 
 ## Pendente
 
-- Publicar esta atualização final do checkpoint e repetir a verificação de refs.
+- Commit e push não foram feitos porque esta solicitação não concedeu autorização Git explícita para publicação.
 
 ## Bloqueado
 
@@ -35,18 +39,18 @@ Concluída: `develop` contém o snapshot definitivo e somente `main` e `develop`
 
 ## Arquivos alterados
 
-- `run-local-production.cmd`
-- `package-lock.json`
+- `launcher/assets/skills/frontend-visual-qa/SKILL.md`
+- `launcher/assets/skills/frontend-visual-qa/agents/openai.yaml`
+- `launcher/electron/bundled-skills.cjs`
 - `.cursor/state/WORK_CHECKPOINT.md`
 - `.cursor/state/CHAT_CONTEXT_HANDOFF.md`
 
 ## Decisões
 
-- Incluir todos os arquivos não commitados, conforme confirmação explícita do usuário.
-- Limpar branches somente no `origin` e localmente; não alterar branches do remoto upstream externo `joao`.
-- Preservar `main` sem reescrever seu conteúdo.
-- Usar `--force-with-lease` ao substituir `origin/develop`, evitando sobrescrever uma atualização remota inesperada.
-- Não executar testes, conforme restrição explícita do projeto; executar apenas validações Git e de conteúdo.
+- A pasta fornecida pelo usuário é a fonte autoritativa; não reinterpretar nem reescrever suas instruções.
+- Sincronizar todo o pacote da skill, incluindo `.managed-by-codex-web-gpt` e `agents/openai.yaml`.
+- Tornar `frontend-visual-qa` obrigatória na seleção do launcher para que reinstalações não a removam.
+- Não executar nem alterar testes, conforme restrição explícita do projeto; executar validações estruturais e de hash.
 
 ## Validações executadas
 
@@ -60,6 +64,11 @@ Concluída: `develop` contém o snapshot definitivo e somente `main` e `develop`
 - `git diff --exit-code develop origin/develop` sem diferenças após a publicação principal.
 - `git diff --exit-code main origin/main` sem diferenças.
 - `git fsck --no-dangling --no-progress` concluído sem erro.
+- `node --check launcher/electron/bundled-skills.cjs` concluído sem erro.
+- Validação direta de seleção vazia retornou `frontend-visual-qa` entre as skills obrigatórias.
+- Frontmatter de `SKILL.md` reconhecido com `name` e `description`.
+- Hashes SHA-256 idênticos entre fonte, pacote e instalação ativa.
+- `git diff --check` sem erros.
 
 ## Erros encontrados
 
@@ -67,8 +76,8 @@ Concluída: `develop` contém o snapshot definitivo e somente `main` e `develop`
 
 ## Último comando relevante
 
-Exclusão de `origin/fork`, `origin/forkfork` e das quatro branches locais excedentes, seguida de validação dos hashes locais/remotos.
+Validação de sintaxe e contrato de seleção do instalador, frontmatter, precedência da fonte e hashes dos três pacotes.
 
 ## Próximo passo EXATO
 
-Commitar e publicar esta atualização final do checkpoint; confirmar novamente que local e remoto possuem apenas `main` e `develop`.
+Quando houver autorização explícita, criar commit e publicar as alterações da skill na `develop`; até lá, preservar o working tree atual.
