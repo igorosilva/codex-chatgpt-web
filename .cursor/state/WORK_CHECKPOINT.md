@@ -6,7 +6,7 @@ Transformar o estado completo atual da branch `joao-main`, incluindo alteraçõe
 
 ## Etapa atual
 
-Inventário concluído; preparando o snapshot exato antes da substituição de `develop` e da exclusão das demais branches.
+Concluída: `develop` contém o snapshot definitivo e somente `main` e `develop` permanecem localmente e no `origin`.
 
 ## Concluído
 
@@ -15,20 +15,19 @@ Inventário concluído; preparando o snapshot exato antes da substituição de `
 - Atualizados e podados os refs dos remotos com `git fetch --all --prune`.
 - Confirmado que o remoto de publicação é `origin` (`igorosilva/codex-chatgpt-web`) e que `joao` é upstream externo.
 - Confirmadas as branches remotas atuais do `origin`: `main`, `develop`, `fork` e `forkfork`.
+- Criado o snapshot `b6563591d25989287233aaade91bf180bf2abb4e` com todos os ajustes antes não commitados.
+- `origin/develop` foi substituída por esse snapshot com `--force-with-lease`.
+- `origin/fork` e `origin/forkfork` foram excluídas.
+- As branches locais `codex/web-image-handoff`, `fork`, `forkfork` e `joao-main` foram excluídas.
+- Confirmado que somente `main` e `develop` permanecem localmente e no `origin`.
 
 ## Parcial
 
-- O snapshot final ainda precisa ser commitado e publicado.
+- Nenhum item parcial.
 
 ## Pendente
 
-- Verificar o conteúdo que será versionado contra padrões de credenciais.
-- Criar um commit único com todo o estado atual, incluindo os ajustes antes não commitados.
-- Fazer `develop` apontar exatamente para esse snapshot.
-- Publicar `develop` com proteção `--force-with-lease`.
-- Excluir `origin/fork` e `origin/forkfork`.
-- Excluir todas as branches locais exceto `main` e `develop`.
-- Verificar refs locais e remotos após `fetch --prune`.
+- Publicar esta atualização final do checkpoint e repetir a verificação de refs.
 
 ## Bloqueado
 
@@ -56,6 +55,11 @@ Inventário concluído; preparando o snapshot exato antes da substituição de `
 - `git log --graph --decorate --oneline --all`.
 - Comparação de divergência entre `HEAD`, `develop` e `origin/develop`.
 - `git ls-remote --heads origin`.
+- `git diff --cached --check` sem erros.
+- Varredura do conteúdo staged sem credenciais; ocorrências encontradas eram apenas o nome da dependência `tiktoken`.
+- `git diff --exit-code develop origin/develop` sem diferenças após a publicação principal.
+- `git diff --exit-code main origin/main` sem diferenças.
+- `git fsck --no-dangling --no-progress` concluído sem erro.
 
 ## Erros encontrados
 
@@ -63,8 +67,8 @@ Inventário concluído; preparando o snapshot exato antes da substituição de `
 
 ## Último comando relevante
 
-`git fetch --all --prune` seguido do inventário completo de refs, diferenças e branches remotas.
+Exclusão de `origin/fork`, `origin/forkfork` e das quatro branches locais excedentes, seguida de validação dos hashes locais/remotos.
 
 ## Próximo passo EXATO
 
-Adicionar todo o estado atual ao índice, revisar o diff staged e procurar padrões de credenciais antes de criar o snapshot definitivo.
+Commitar e publicar esta atualização final do checkpoint; confirmar novamente que local e remoto possuem apenas `main` e `develop`.

@@ -30,3 +30,6 @@ Consolidar o estado integral de `joao-main`, inclusive o working tree não commi
 - Alterações não commitadas confirmadas: `run-local-production.cmd`, `package-lock.json`, `WORK_CHECKPOINT.md` e `CHAT_CONTEXT_HANDOFF.md`.
 - Branches do `origin` antes da operação: `main`, `develop`, `fork`, `forkfork`.
 - Branches locais antes da operação: `codex/web-image-handoff`, `develop`, `fork`, `forkfork`, `joao-main`, `main`.
+- Snapshot inicial consolidado: `b6563591d25989287233aaade91bf180bf2abb4e`.
+- Limpeza concluída: somente `main` e `develop` permanecem localmente e no `origin`.
+- O remoto externo `joao` e suas refs de acompanhamento foram preservados; nenhuma branch foi apagada no repositório upstream de terceiro.
