@@ -11,10 +11,12 @@ rem browser, tunnel MCP worker and Responses bridge can attach to different pipe
 set "CODEX_CHATGPT_WEB_HOME=%USERPROFILE%\.codex-chatgpt-web"
 set "CODEX_HOME=%USERPROFILE%\.codex"
 
-rem Keep an explicitly supplied runtime, otherwise discover the installed Bun.
+rem Keep an explicitly supplied runtime, otherwise prefer this checkout's bundled
+rem runtime before looking for an installed or globally available Bun.
 if defined CODEX_WEB_GPT_BUN if exist "%CODEX_WEB_GPT_BUN%" goto bun_ready
 set "CODEX_WEB_GPT_BUN="
 for %%B in (
+  "%~dp0dist\runtime\runtime\bun.exe"
   "%ProgramFiles%\Codex Web GPT\resources\runtime\runtime\bun.exe"
   "%LOCALAPPDATA%\Programs\Codex Web GPT\resources\runtime\runtime\bun.exe"
   "%LOCALAPPDATA%\Codex Web GPT\resources\runtime\runtime\bun.exe"
@@ -52,9 +54,13 @@ if not exist "node_modules" (
     exit /b 1
   )
 )
-if not exist "launcher\node_modules\vite\package.json" (
+if not exist "launcher\node_modules\vite\package.json" goto install_launcher_dependencies
+if not exist "launcher\node_modules\pngjs\package.json" goto install_launcher_dependencies
+goto launcher_dependencies_ready
+
+:install_launcher_dependencies
   echo Dependencias do launcher ausentes. Instalando com Bun...
-  "%CODEX_WEB_GPT_BUN%" install --cwd launcher
+  "%CODEX_WEB_GPT_BUN%" install --cwd launcher --frozen-lockfile
   if errorlevel 1 (
     echo.
     echo [ERRO] A instalacao das dependencias do launcher falhou.
@@ -62,7 +68,8 @@ if not exist "launcher\node_modules\vite\package.json" (
     pause
     exit /b 1
   )
-)
+
+:launcher_dependencies_ready
 echo Starting Codex Web GPT from local source with the production profile...
 "%CODEX_WEB_GPT_BUN%" run launcher:dev
 set "EXIT_CODE=%ERRORLEVEL%"
